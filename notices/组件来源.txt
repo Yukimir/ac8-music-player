@@ -1,0 +1,6 @@
+Python 3.13 x64 · https://www.python.org/downloads/windows/ · runtime/LICENSE.txt
+NumPy 2.3.5 · https://pypi.org/project/numpy/2.3.5/ · runtime/packages/numpy-2.3.5.dist-info/LICENSE.txt
+vgmstream r2168 · https://github.com/vgmstream/vgmstream/tree/r2168 · decoder/COPYING，licenses/vgmstream
+Windows 解码组件与构建资料 · https://github.com/vgmstream/vgmstream/tree/r2168/ext_libs
+pyooz 0.0.8 · https://pypi.org/project/pyooz/0.0.8/ · 上游完整源码见本目录 pyooz-0.0.8.tar.gz
+ooz 解压器 © 2016 Powzix · GPL v3 或更高版本，见 ooz-GPLv3.txt。

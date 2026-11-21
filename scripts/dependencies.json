@@ -1,0 +1,22 @@
+{
+  "python": {
+    "url": "https://www.python.org/ftp/python/3.13.17/python-3.13.17-embed-amd64.zip",
+    "sha256": "9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38"
+  },
+  "numpy": {
+    "url": "https://files.pythonhosted.org/packages/0c/88/e2eaa6cffb115b85ed7c7c87775cb8bcf0816816bc98ca8dbfa2ee33fe6e/numpy-2.3.5-cp313-cp313-win_amd64.whl",
+    "sha256": "00dc4e846108a382c5869e77c6ed514394bdeb3403461d25a829711041217d5b"
+  },
+  "vgmstream": {
+    "url": "https://github.com/vgmstream/vgmstream/releases/download/r2168/vgmstream-win64.zip",
+    "sha256": "692d45070852a35c1fa42726aa3c9de528e44eec925d37d99b1074256b99a229"
+  },
+  "pyooz": {
+    "url": "https://files.pythonhosted.org/packages/cf/5d/767b4cea8a864c558dad4df0ce3282abbc4d462dac415014bccd10605527/pyooz-0.0.8-cp38-abi3-win_amd64.whl",
+    "sha256": "9c0f22b8bec3277f807215a6256bdc6b77375e4d01067dfb580422c35b1d2d65"
+  },
+  "pyooz_source": {
+    "url": "https://files.pythonhosted.org/packages/97/95/025dc21dbfe92855d6ab7b3c960159a682f647f71ac748714f0512695af6/pyooz-0.0.8.tar.gz",
+    "sha256": "98916331773493764483bc6448c9c6166bf2440939abe77cd140509038cc3adf"
+  }
+}

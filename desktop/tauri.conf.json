@@ -1,0 +1,39 @@
+{
+  "build": {
+    "distDir": "ui",
+    "devPath": "ui",
+    "withGlobalTauri": true
+  },
+  "package": {
+    "productName": "AC8 Music Player",
+    "version": "1.0.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false
+    },
+    "bundle": {
+      "active": false,
+      "identifier": "local.ac8.musicplayer",
+      "icon": [
+        "icons/player.ico"
+      ]
+    },
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "ACE COMBAT 8  ·  MUSIC PLAYER",
+        "width": 1260,
+        "height": 820,
+        "minWidth": 740,
+        "minHeight": 520,
+        "resizable": true,
+        "center": true,
+        "fullscreen": false
+      }
+    ]
+  }
+}

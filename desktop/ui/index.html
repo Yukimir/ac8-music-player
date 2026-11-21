@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ACE COMBAT 8 · MUSIC PLAYER</title>
+  <link rel="stylesheet" href="player.css">
+  <script defer src="spectral-field.js"></script><script defer src="terrain.js"></script>
+  <script defer src="meters.js"></script><script defer src="arrangements.js"></script><script defer src="library-import.js"></script><script defer src="player.js"></script>
+</head>
+<body>
+  <canvas id="terrain" aria-hidden="true"></canvas>
+  <dialog id="libraryImport" aria-labelledby="importTitle">
+    <h2 id="importTitle">从游戏导入音频</h2>
+    <p id="importInfo"></p>
+    <form id="importForm">
+      <label for="importPath">ACE COMBAT 8 安装目录</label>
+      <div class="import-path"><input id="importPath" type="text" spellcheck="false" placeholder="选择或粘贴游戏目录"><button id="importBrowse" type="button">浏览…</button></div>
+      <progress id="importProgress" hidden></progress>
+      <p id="importMessage" role="status"></p>
+      <button id="importStart" class="primary" type="submit">导入音频</button>
+    </form>
+  </dialog>
+  <div class="shell">
+    <header><h1>MUSIC PLAYER</h1>
+      <div class="header-right"><span class="game">ACE COMBAT <b>8</b></span><span class="vline"></span>
+        <label class="vol" title="总音量"><span aria-hidden="true">◖))</span><span class="sr">总音量</span><input id="volume" type="range" min="0" max="100" value="65"></label>
+      </div>
+    </header>
+    <main>
+      <nav aria-label="曲库">
+        <div class="navtop"><label class="category"><span class="filter-icon" aria-hidden="true"></span>
+          <select aria-label="曲库分类" id="filter"><option>互动配乐</option><option>单段配乐</option><option>全部曲目</option></select></label>
+          <span id="total" class="mono"></span></div>
+        <label class="search"><i aria-hidden="true"></i><input type="search" id="query" placeholder="搜索曲名或出处" aria-label="搜索曲名或出处"><kbd>/</kbd></label>
+        <div id="list" role="listbox" aria-label="选曲" tabindex="0"></div>
+        <p id="empty" hidden>没有匹配的曲目</p>
+      </nav>
+      <section id="right" aria-label="播放控制">
+        <article id="now"><div class="headings"><h2 id="title">正在读取曲库</h2><p id="origin"></p><p id="other" hidden></p></div>
+          <div class="meterbox"><canvas id="spectrum" aria-label="实时音频频谱"></canvas></div>
+          <input id="seek" type="range" min="0" max="10000" value="0" aria-label="段落播放位置">
+          <div class="timing mono"><span id="time">00:00</span><span id="duration">00:00</span></div>
+          <div class="transport"><button class="primary" id="play" disabled><span id="playIcon">▶</span><span id="playText">播放</span></button>
+            <button class="icon" id="previous" title="上一首（A）" aria-label="上一首">◂◂</button>
+            <button class="icon" id="following" title="下一首（D）" aria-label="下一首">▸▸</button>
+            <button class="order" id="order" title="切换顺序或随机播放（T）">顺序播放</button>
+            <span id="load" role="status"></span>
+          </div>
+          <div class="cockpit-controls" role="group" aria-label="座舱音效">
+            <label class="effects-switch"><input type="checkbox" id="effects" role="switch">随机音效</label>
+            <button id="chooseEffects" type="button" aria-expanded="false" aria-controls="effectCategories" disabled>音效类别 <span id="effectCount">6/6</span></button>
+            <label class="effects-switch" title="巡航时推力缓慢变化，开启随机告警后会随警报起伏"><input type="checkbox" id="engineBed" role="switch">发动机底噪</label>
+            <label class="vol se-volume"><span>SE 音量</span><input id="seVolume" type="range" min="0" max="100" value="50" aria-label="SE 音量"><output id="seLevel" for="seVolume">50%</output></label>
+          </div>
+          <fieldset id="effectCategories" aria-label="随机播放的音效类别" hidden>
+            <label><input type="checkbox" value="missile" checked>导弹来袭</label>
+            <label><input type="checkbox" value="launch" checked>发射导弹</label>
+            <label><input type="checkbox" value="gun" checked>机炮射击</label>
+            <label><input type="checkbox" value="railgun" checked>轨道炮告警</label>
+            <label><input type="checkbox" value="pull_up" checked>拉起告警</label>
+            <label><input type="checkbox" value="stall" checked>失速告警</label>
+          </fieldset>
+        </article>
+        <section class="pane phases"><div class="pane-head"><h3>段落</h3><span id="phaseStatus" aria-live="polite"></span>
+          <button id="nextPhase" title="按当前音乐规则切至下一段">下一段 <b>›</b></button></div>
+          <div id="sections" aria-label="选择段落" title="单击排队，双击立即切换"></div>
+          <div class="settings"><label>循环次数 <select id="repeat" aria-label="循环次数"></select></label>
+            <label>每遍长度 <select id="bars" aria-label="每遍长度"></select></label>
+            <button id="reset">还原预设</button></div>
+          <p class="section-help">单击排队 · 双击立即切换</p>
+        </section>
+        <section class="pane tracks"><div class="pane-head"><h3>分轨</h3><span id="laneCount"></span><span id="loopInfo" class="mono"></span></div>
+          <div id="lanes" aria-label="分轨开关和时间线"></div>
+        </section>
+        <section id="arrangements" class="pane arr" aria-label="编排" hidden>
+          <div class="pane-head"><h3>编排</h3><span id="arrPosition" class="mono"></span><button id="arrNew">新建</button></div>
+          <div id="arrList" role="group" aria-label="选择编排"></div>
+          <div id="arrPreview"></div>
+          <div id="arrEditor"></div>
+          <p id="arrNotice" role="status" hidden></p>
+        </section>
+        <p id="error" role="alert" hidden></p>
+      </section>
+    </main>
+    <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选曲</span><span>双击或 <kbd>Enter</kbd> 播放选曲</span><span><kbd>Space</kbd> 暂停 / 继续</span><span><kbd>R</kbd> 循环</span><span><kbd>1</kbd><kbd>3</kbd> 后退 / 快进</span>
+    <span class="outfmt">48 kHz <i></i> STEREO</span></footer>
+  </div>
+</body></html>
