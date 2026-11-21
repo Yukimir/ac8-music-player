@@ -4,6 +4,7 @@ __pycache__/
 /work/
 /build/
 /dist/
+/audio/
 target/
 /library/wem/
 /library/cockpit/

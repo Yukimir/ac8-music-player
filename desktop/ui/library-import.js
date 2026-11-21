@@ -6,7 +6,7 @@ window.prepareAudioLibrary=async function(api) {
   const dialog=get('libraryImport'), path=get('importPath'), browse=get('importBrowse');
   const form=get('importForm'), start=get('importStart'), msg=get('importMessage'), bar=get('importProgress');
   path.value=state.game || '';
-  get('importInfo').textContent='首次使用会从本机安装的游戏生成 BGM 和座舱音效，占用约 '+
+  get('importInfo').textContent='BGM 和座舱音效会从游戏导入到播放器旁的 audio 文件夹，占用约 '+
     (state.bytes/1024**3).toFixed(1)+' GiB。完成后可以离线播放。';
   dialog.oncancel=e=>e.preventDefault();dialog.showModal();
   await new Promise(resolve=>{

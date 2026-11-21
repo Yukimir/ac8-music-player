@@ -34,10 +34,10 @@ t.select(song,arrangement=a);t.playing=True
 assert t.key==2 and t.run==1 and t.step_index==0 and t.queued is None
 t.queue(1);assert not t.jump(1) and t.queued is None
 r=t.render(6000)[:,0]
-assert (r[:2001]==1000).all() and (r[2720:]==2000).all() and 1000<r[2380]<2000
+assert (r[:2000]==1000).all() and (r[2000:]==2000).all()
 assert t.key==2 and t.run==2 and t.step_index==0
 r=t.render(6000)[:,0]
-assert (r[:2001]==2000).all() and (r[2720:]==3000).all()
+assert (r[:2000]==2000).all() and (r[2000:]==3000).all()
 assert t.key==2 and t.run==1 and t.step_index==1 and not t.enabled(segs[2]['lanes'][0])
 assert (t.render(6000)==0).all() and t.key==3 and t.active['bridge']
 t.render(6000);assert t.key==1 and t.step_index==2
@@ -65,9 +65,47 @@ try:normalize(dict(id='bad',steps=[{**short,'changes':[change(1,2,[])]}]),song,s
 except ValueError:pass
 else:raise AssertionError('cue outside shortened pass')
 
+# Loop every 6000 frames so each 300 ms manual fade crosses multiple voices.
+manual=Transport(dict(segments=segs,rules={}))
+manual.audio=t.audio
+manual.master=1
+manual.select({**song,'loops':{'1':0}})
+manual.playing=True
+lane=segs[1]['lanes'][1]
+manual.toggle(lane)
+samples=manual.render(14401)[:,0]
+assert list(samples[[0,3600,7200,10800,14400]])==[1000,1312,2000,2687,3000]
+manual.toggle(lane)
+samples=manual.render(7200)[:,0]
+assert samples[0]==3000 and samples[3600]==2687
+manual.toggle(lane)
+samples=manual.render(14401)[:,0]
+assert list(samples[[0,7200,14400]])==[2000,2500,3000]
+manual.toggle(lane)
+samples=manual.render(14402)[:,0]
+assert list(samples[[0,3600,7200,10800,14400,14401]])==[3000,2687,2000,1312,1000,1000]
+
+# A manual fade just before a cue yields to its full lane state on the exact beat.
+manual.select(song,arrangement=a)
+manual.playing=True
+manual.render(1900)
+manual.toggle(segs[2]['lanes'][1])
+samples=manual.render(102)[:,0]
+assert samples[99]<1100 and list(samples[100:])==[2000,2000]
+
 d=json.loads((base/'library/score.json').read_bytes())
 a=json.loads((base/'library/arrangements.json').read_bytes());t=Transport(d)
 assert len(a)==sum(s['bank']=='互动配乐' for s in d['songs'])
+if sys.platform=='win32':
+    from bridge import Player
+    player=Player.__new__(Player)
+    player.defaults=a
+    sid=int(next(iter(a)))
+    assert player.resolve(sid,{'id':'free'}) is None
+    assert player.resolve(sid,{'id':'free','name':'自由编排'}) is None
+    try:player.resolve(sid,{'id':'free','steps':a[str(sid)]['steps']})
+    except ValueError:pass
+    else:raise AssertionError('Free mode must reject arrangement steps')
 for s in d['songs']:
     if str(s['id']) not in a:continue
     p=normalize(a[str(s['id'])],s,t.segs)

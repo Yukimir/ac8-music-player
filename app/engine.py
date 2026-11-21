@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 RATE = 48000
+MANUAL_FADE_FRAMES = round(.3 * RATE)
 DEFAULT_RULE = dict(sync=7, cue=0, post=1, pre=1, out=[0,0,4], inc=[0,0,4], entry=0, dcue=0)
 
 
@@ -75,6 +76,12 @@ def shape(t, code):
     return np.where(t>=1,1.,0.)
 
 
+def lane_gain(ramp, frame):
+    start, end, initial, target = ramp
+    progress = np.clip((frame-start)/(end-start), 0., 1.)
+    return initial + (target-initial)*shape(progress, 5)
+
+
 def envelope(points, times):
     """Clip envelopes are relative to the trimmed clip start."""
     if times[-1] <= points[0][0]: return points[0][1]
@@ -135,6 +142,7 @@ class Transport:
 
     def start(self,sid,pos=0,keep_queue=False,step_index=0,run=1):
         self.clock=0
+        self.free_ramps={}
         self.run=run
         self.step_index=step_index
         self.finished=False
@@ -147,7 +155,9 @@ class Transport:
         self.plan()
 
     def voice(self,sid,origin,start):
-        return dict(id=sid,origin=origin,start=start,end=origin+self.segs[sid]['length'],inc=None,out=None)
+        # A manually toggled lane can ring across the boundary of a free-mode loop.
+        ramps={} if self.arrangement else self.free_ramps
+        return dict(id=sid,origin=origin,start=start,end=origin+self.segs[sid]['length'],inc=None,out=None,ramps=ramps)
 
     def prepare_step(self,voice,index,run,pos):
         step=self.arrangement['steps'][index]
@@ -323,12 +333,15 @@ class Transport:
 
     def set_lane(self,lane,on):
         old=self.enabled(lane)
+        if old==on:return
         if 'mask' in self.active:
             if on:self.active['mask'].add(lane['key'])
             else:self.active['mask'].discard(lane['key'])
         else:self.mutes[lane['key']]=on
-        if old!=on:
-            self.active.setdefault('ramps',{})[lane['key']]=(self.clock,self.clock+720,old,on)
+        ramps=self.active['ramps']
+        previous=ramps.get(lane['key'])
+        initial=lane_gain(previous,self.clock) if previous and self.clock<previous[1] else float(old)
+        ramps[lane['key']]=(self.clock,self.clock+MANUAL_FADE_FRAMES,initial,float(on))
 
     def mix_voice(self,v,out,n):
         a=max(self.clock,v['start'])
@@ -337,7 +350,7 @@ class Transport:
         s=self.segs[v['id']];pa=a-v['origin'];pb=b-v['origin']
         block=np.zeros((b-a,2),np.float32)
         for lane in s['lanes']:
-            ramp=v.get('ramps',{}).get(lane['key'])
+            ramp=v['ramps'].get(lane['key'])
             enabled=self.enabled(lane,v)
             if not enabled and (not ramp or a>=ramp[1]):continue
             gain=10**(lane['db']/20)
@@ -352,9 +365,8 @@ class Transport:
                 if clip['env']:
                     times=np.arange(lo-clip['at'],hi-clip['at'])
                     for points in clip['env']:g=g*envelope(points,times)
-                if ramp and a+lo-pa<ramp[1]:
-                    t=np.clip((np.arange(lo,hi)+v['origin']-ramp[0])/(ramp[1]-ramp[0]),0,1)
-                    g=g*(t if ramp[3] else 1-t)
+                if ramp and a<ramp[1]:
+                    g=g*lane_gain(ramp,np.arange(lo,hi)+v['origin'])
                 if isinstance(g,np.ndarray):g=g[:,None]
                 block[lo-pa:hi-pa]+=arr*g
         for k in ('inc','out'):
@@ -373,10 +385,9 @@ class Transport:
             for voice in self.voices:
                 events=voice.get('events')
                 while events and events[0][0]<=self.clock:
-                    frame,mask=events.popleft()
-                    old=voice['mask']
-                    ramps=voice.setdefault('ramps',{})
-                    for key in old^mask:ramps[key]=(frame,frame+720,key in old,key in mask)
+                    _,mask=events.popleft()
+                    # Each cue specifies the complete lane state at this sample.
+                    voice['ramps'].clear()
                     voice['mask']=mask
                 if events:split=min(split,events[0][0])
             count=min(n-written,max(0,split-self.clock))

@@ -1,4 +1,4 @@
-"""Locate the installed game and build a verified, per-user audio cache."""
+"""Locate the installed game and build a verified audio library beside the player."""
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -112,7 +112,7 @@ class LibraryImport:
         self.version=hashlib.sha256(raw).hexdigest()
         self.spec=json.loads(raw);m=self.spec['music'];e=self.spec['effects'];c=self.spec['cues']
         self.archives={v['pak'] for v in (*m.values(),*e.values())}
-        self.cache=(cache_root or Path(os.environ['LOCALAPPDATA'])/'AC8MusicPlayer/audio')/self.version[:16]
+        self.cache=(cache_root or base/'audio')/self.version[:16]
         self.files={Path('wem')/(k+'.wem'):v['size'] for k,v in m.items()}
         self.files.update({Path('cockpit')/(k+'.wav'):v for k,v in c.items()})
         self.path=None;self.thread=None;self.cancel=threading.Event();self.lock=threading.RLock()
@@ -165,6 +165,8 @@ class LibraryImport:
                 finally:
                     lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_UNLCK,1)
             self.path=self.cache;self.update(phase='ready',message='')
+        except PermissionError as exc:
+            self.update(phase='error',message=f'没有读写权限，请确认游戏可读、播放器所在目录可写。{exc}')
         except Exception as exc:self.update(phase='error',message=str(exc))
 
     def populate(self,source):
@@ -178,7 +180,7 @@ class LibraryImport:
         music=self.spec['music'];cues=self.spec['cues']
         missing=sum(n for p,n in self.files.items() if not (self.cache/p).is_file())
         if shutil.disk_usage(self.cache).free<missing+96*1024**2:
-            raise ValueError(f'本机缓存空间不足，约需 {(missing+96*1024**2)/1024**3:.1f} GiB。')
+            raise ValueError(f'播放器所在磁盘空间不足，约需 {(missing+96*1024**2)/1024**3:.1f} GiB。')
         (self.cache/'wem').mkdir(exist_ok=True);(self.cache/'cockpit').mkdir(exist_ok=True)
         def check():
             if self.cancel.is_set():raise InterruptedError('导入已中断，下次会复用已校验的音源。')

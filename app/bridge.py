@@ -92,9 +92,12 @@ class Player:
 
     def resolve(self,sid,request):
         default=self.defaults.get(str(sid))
-        if default is None or request=={'id':'free'}:return None
+        if default is None:return None
+        if request is not None and request.get('id')=='free':
+            # Earlier desktop builds include the button's display name when clicked.
+            if request.keys()-{'id','name'}:raise ValueError('自由编排不能包含段落')
+            return None
         if request is None or request.get('id')=='default':request=default
-        if request.get('id')=='free':raise ValueError('自由编排不能包含段落')
         return normalize(request,self.catalog[sid],self.transport.segs)
 
     def select(self,sid,play,request=None):

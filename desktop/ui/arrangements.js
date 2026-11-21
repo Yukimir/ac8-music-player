@@ -148,13 +148,14 @@
   function drawList() {
     const data=store(song), list=$('arrList'), preview=$('arrPreview');
     list.replaceChildren();preview.replaceChildren();
-    for (const p of [{id:'free',name:'自由编排'},song.defaultPlan,...data.items]) {
+    for (const p of [planFor(song,'free'),song.defaultPlan,...data.items]) {
       const row=button('',async()=>{
         if (p.id===selected || pending) return;
         notice('');await activate(song,p,data);
       });
       row.dataset.arrangement=p.id;row.setAttribute('aria-pressed',String(p.id===selected));
-      row.append(node('span',p.name || '默认编排'),node('small',p.id==='free'?'手动选段':p.id==='default'?'只读':p.steps.length+' 段'));
+      const title=p.id==='free'?'自由编排':p.name || '默认编排';
+      row.append(node('span',title),node('small',p.id==='free'?'手动选段':p.id==='default'?'只读':p.steps.length+' 段'));
       list.append(row);
     }
     if (selected==='free') return;
