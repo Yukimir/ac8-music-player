@@ -347,7 +347,8 @@ class CockpitEffects:
                 emit('caution', at, .14 + .08 * approach, pulse_end - at)
                 at += .350 + (len(self.samples['caution']) / RATE - .350) * approach
             if rng.random() < {'early':.20,'approach':.50,'danger':.75}[stage]:
-                emit(rng.choice(('missile_pass1','missile_pass2')),clear+rng.uniform(.04,.26),
+                warning_end = (max(cue.stop for cue in result) - origin) / RATE
+                emit(rng.choice(('missile_pass1','missile_pass2')), max(0., warning_end - .4),
                      .17+.17*proximity)
         elif kind == 'railgun':
             end = calls('rail_voice', rng.randint(3, 6), 2., .10)
