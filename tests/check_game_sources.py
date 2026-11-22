@@ -3,6 +3,7 @@ import argparse
 import json
 import sys
 import tempfile
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -13,8 +14,8 @@ parser.add_argument('--game',required=True,help='ACE COMBAT 8 installation')
 args=parser.parse_args()
 sys.path.insert(0,str(args.player/'app'))
 from bridge import add_native_media
-from cockpit import CLOUD_CLIPS, CockpitEffects
-from engine import Media,Transport
+from cockpit import CLOUD_CLIPS, CLOUD_SOURCE_START, CockpitEffects
+from engine import Media,Transport,RATE
 from game_import import LibraryImport
 from surround import FULL,SurroundMix
 
@@ -57,8 +58,18 @@ with tempfile.TemporaryDirectory() as tmp:
     assert library.start('')['phase']=='ready'
     offline=LibraryImport(args.player,root/'audio')
     with offline.music(normal,root) as stored:assert stored==dest
+    cached_effects=CockpitEffects()
     with offline.cockpit() as fetch:
-        for name in CLOUD_CLIPS:assert fetch(name)==cloud_dir/(name+'.wav')
+        cached_effects.prepare(fetch,('cloud',))
+        for name in CLOUD_CLIPS:
+            path=fetch(name)
+            assert path==cloud_dir/(name+'.wav')
+            with wave.open(str(path),'rb') as wav:
+                raw=np.frombuffer(wav.readframes(wav.getnframes()),'<i2').reshape(-1,2)
+            aligned=raw[CLOUD_SOURCE_START[name]:]
+            assert len(aligned)>=round(8.2*RATE)
+            np.testing.assert_array_equal(effects.samples[name],aligned)
+            np.testing.assert_array_equal(cached_effects.samples[name],aligned)
     try:
         with offline.music(key,root):raise AssertionError('unavailable native asset accepted')
     except ValueError as exc:assert key.removeprefix('native-') in str(exc)

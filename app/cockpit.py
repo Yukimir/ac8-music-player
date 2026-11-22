@@ -21,7 +21,10 @@ class Cue:
     cut_at: int | None = None
 
 
-CLOUD_CLIPS = ('cloud_inside1','cloud_inside2')
+# Skip each recording's quiet lead-in before applying the shared cloud envelope.
+# These are the first sustained -6 dB points relative to the established wind.
+CLOUD_SOURCE_START = {'cloud_inside1':round(.42*RATE), 'cloud_inside2':round(1.23*RATE)}
+CLOUD_CLIPS = tuple(CLOUD_SOURCE_START)
 CLOUD_ATTACK = round(.65*RATE)
 CLOUD_RELEASE = RATE
 CLOUD_CANCEL = round(.22*RATE)
@@ -246,6 +249,9 @@ class CockpitEffects:
                 if stream.getframerate()!=RATE or stream.getsampwidth()!=2 or channels not in (1,2):
                     raise ValueError('音效格式错误：'+name)
                 data=np.frombuffer(stream.readframes(stream.getnframes()),'<i2').reshape(-1,channels)
+            start=CLOUD_SOURCE_START.get(name,0)
+            if 0<start<len(data):
+                data=data[start:]
             if name in ('missile_hit','boom1','boom2'):
                 data,self.distant_samples[name]=explosion_profiles(data)
             self.samples[name]=data
