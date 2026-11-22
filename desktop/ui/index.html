@@ -4,32 +4,60 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ACE COMBAT 8 · MUSIC PLAYER</title>
   <link rel="stylesheet" href="player.css">
-  <script defer src="spectral-field.js"></script><script defer src="terrain.js"></script>
+  <script defer src="spectral-field.js"></script><script defer src="terrain-camera.js"></script><script defer src="terrain-points.js"></script><script defer src="terrain.js"></script>
   <script defer src="meters.js"></script><script defer src="arrangements.js"></script><script defer src="library-import.js"></script><script defer src="player.js"></script>
 </head>
 <body>
   <canvas id="terrain" aria-hidden="true"></canvas>
+  <dialog id="closePrompt" aria-labelledby="closeTitle">
+    <h2 id="closeTitle">关闭播放器？</h2>
+    <p>隐藏到托盘后，音乐和桌面背景会继续运行。</p>
+    <form method="dialog" class="source-actions">
+      <button value="cancel">取消</button><button value="exit">退出播放器</button>
+      <button value="hide" class="primary" autofocus>隐藏到托盘</button>
+    </form>
+  </dialog>
   <dialog id="libraryImport" aria-labelledby="importTitle">
-    <h2 id="importTitle">从游戏导入音频</h2>
-    <p id="importInfo"></p>
+    <h2 id="importTitle">音频来源</h2>
     <form id="importForm">
       <label for="importPath">ACE COMBAT 8 安装目录</label>
       <div class="import-path"><input id="importPath" type="text" spellcheck="false" placeholder="选择或粘贴游戏目录"><button id="importBrowse" type="button">浏览…</button></div>
+      <fieldset class="source-options"><legend>读取方式</legend>
+        <label><input type="radio" id="readDirect" name="readMode" checked>直接读取游戏文件</label>
+        <label><input type="radio" id="readExtract" name="readMode">提取到播放器目录</label>
+        <label class="native-option"><input type="checkbox" id="extractNative" disabled>同时提取原生 7.1.4 素材</label>
+      </fieldset>
+      <p id="importInfo"></p>
       <progress id="importProgress" hidden></progress>
       <p id="importMessage" role="status"></p>
-      <button id="importStart" class="primary" type="submit">导入音频</button>
+      <div class="source-actions"><button id="importCancel" type="button" hidden>取消</button><button id="importStart" class="primary" type="submit">进入播放器</button></div>
     </form>
   </dialog>
   <div class="shell">
     <header><h1>MUSIC PLAYER</h1>
       <div class="header-right"><span class="game">ACE COMBAT <b>8</b></span><span class="vline"></span>
         <label class="vol" title="总音量"><span aria-hidden="true">◖))</span><span class="sr">总音量</span><input id="volume" type="range" min="0" max="100" value="65"></label>
+        <button id="sourceSettings" class="header-icon" type="button" title="音频来源设置" aria-label="音频来源设置" aria-haspopup="dialog" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.2 2.5h3.6l.5 2.3 1.6.7 2-1.3 2.6 2.6-1.3 2 .7 1.6 2.1.5v3.4l-2.2.5-.7 1.6 1.3 2-2.6 2.6-2-1.3-1.6.7-.5 2.1h-3.4l-.5-2.2-1.6-.7-2 1.3-2.6-2.6 1.3-2-.7-1.6-2.2-.5v-3.4l2.3-.5.7-1.6-1.3-2 2.6-2.6 2 1.3 1.6-.7z"/><circle cx="12" cy="12" r="3.2"/></svg>
+        </button>
+        <button id="wallpaperMode" class="header-icon" type="button" title="设为桌面背景" aria-label="桌面背景" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3.5" width="20" height="14" rx="1.7"/><path d="m4 15 5-5 3 3 3.5-4 4.5 6M12 17.5V21m-4 0h8"/></svg>
+        </button>
+        <button id="cameraMode" class="header-icon" type="button" title="开启随机运镜" aria-label="随机运镜" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="5.5" width="13" height="12" rx="2"/><path d="m15.5 9 5.5-3v11l-5.5-3"/><path class="camera-play" d="m7.4 9 4 2.5-4 2.5z"/></svg>
+        </button>
+        <button id="toggleUi" class="header-icon" type="button" title="隐藏界面" aria-label="隐藏界面" aria-expanded="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <g class="eye-open"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></g>
+            <g class="eye-off"><path d="m3 3 18 18M9.5 5.4A9 9 0 0 1 12 5c6.4 0 10 7 10 7a21 21 0 0 1-3.2 4M6.1 6.9A21 21 0 0 0 2 12s3.6 7 10 7a12 12 0 0 0 5.1-1.3M9.9 9.9a3 3 0 0 0 4.2 4.2"/></g>
+          </svg>
+        </button>
       </div>
     </header>
     <main>
       <nav aria-label="曲库">
         <div class="navtop"><label class="category"><span class="filter-icon" aria-hidden="true"></span>
-          <select aria-label="曲库分类" id="filter"><option>互动配乐</option><option>单段配乐</option><option>全部曲目</option></select></label>
+          <select aria-label="曲库分类" id="filter"><option>互动配乐</option><option value="单段配乐">单曲</option></select></label>
           <span id="total" class="mono"></span></div>
         <label class="search"><i aria-hidden="true"></i><input type="search" id="query" placeholder="搜索曲名或出处" aria-label="搜索曲名或出处"><kbd>/</kbd></label>
         <div id="list" role="listbox" aria-label="选曲" tabindex="0"></div>
@@ -43,7 +71,7 @@
           <div class="transport"><button class="primary" id="play" disabled><span id="playIcon">▶</span><span id="playText">播放</span></button>
             <button class="icon" id="previous" title="上一首（A）" aria-label="上一首">◂◂</button>
             <button class="icon" id="following" title="下一首（D）" aria-label="下一首">▸▸</button>
-            <button class="order" id="order" title="切换顺序或随机播放（T）">顺序播放</button>
+            <button class="order" id="order" title="切换播放模式（T）：顺序播放 / 随机播放 / 单曲循环">顺序播放</button>
             <span id="load" role="status"></span>
           </div>
           <div class="cockpit-controls" role="group" aria-label="座舱音效">
@@ -82,7 +110,7 @@
         <p id="error" role="alert" hidden></p>
       </section>
     </main>
-    <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选曲</span><span>双击或 <kbd>Enter</kbd> 播放选曲</span><span><kbd>Space</kbd> 暂停 / 继续</span><span><kbd>R</kbd> 循环</span><span><kbd>1</kbd><kbd>3</kbd> 后退 / 快进</span>
-    <span class="outfmt">48 kHz <i></i> STEREO</span></footer>
+    <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选曲</span><span>双击或 <kbd>Enter</kbd> 播放选曲</span><span><kbd>Space</kbd> 暂停 / 继续</span><span><kbd>R</kbd> 段落循环</span><span><kbd>T</kbd> 播放模式</span><span><kbd>1</kbd><kbd>3</kbd> 后退 / 快进</span>
+    <span class="outfmt">48 kHz <i></i> <span id="outputLayout">自动</span></span></footer>
   </div>
 </body></html>

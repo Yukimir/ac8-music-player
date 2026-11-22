@@ -16,8 +16,9 @@ except ImportError:
     import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ('arrangement','bridge','cockpit','device','engine','game_import','import_cockpit','spectrum')
-METADATA = ('arrangements.json','import.json','score.json')
+APP = ('arrangement','audio_layout','bridge','cockpit','device','engine','game_import','import_cockpit',
+       'spatial_output','spectrum','surround')
+METADATA = ('arrangements.json','import.json','native.json','score.json')
 GAME_MEDIA = {'.pak','.utoc','.ucas','.wem','.bnk','.wav','.ogg','.mp3','.flac'}
 
 

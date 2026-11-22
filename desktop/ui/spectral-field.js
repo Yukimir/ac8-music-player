@@ -1,15 +1,20 @@
 'use strict';
 
 // A horizontal slice is frequency. Successive slices form the depth of the map.
-// The audio engine produces one slice per 40 ms of output, including silent ones.
+// Each numbered slice is one audio hop, including silence.
 class SpectralField {
   constructor() {
     this.bands = 56;
     this.capacity = 56;
     this.rows = Array.from({length:this.capacity}, () => ({
-      number:-1, energy:new Float32Array(this.bands), tone:new Float32Array(this.bands)
+      number:-1, energy:new Float32Array(this.bands), tone:new Float32Array(this.bands),
+      heat:new Float32Array(this.bands)
     }));
-    this.kernel = Array.from({length:19}, (_,i) => Math.exp(-.5*((i-9)/3.3)**2));
+    this.hop = 20;
+    this.kernel = Array.from({length:11}, (_,i) => Math.exp(-.5*((i-5)/2.2)**2));
+    // The analyzer encodes -70..0 dBFS. Use actual spectral power when
+    // locating the dominant frequency, while retaining its level for height.
+    this.power = Array.from({length:256}, (_,i) => 10**((i/255-1)*7));
     this.newest = -1;
     this.cursor = -1;
     this.gain = 0;
@@ -19,12 +24,13 @@ class SpectralField {
 
   ingest(state, now) {
     this.playing = state.playing && state.ready && !state.error;
-    if (!this.playing) return;
+    this.hop = state.spectrumHopMs || 20;
     if (state.spectrumEpoch !== this.epoch || state.song !== this.song) {
       this.epoch = state.spectrumEpoch;
       this.song = state.song;
       this.clear();
     }
+    if (!this.playing) return;
     const frames = state.spectralFrames;
     if (!frames || !frames.length) return;
     if (this.newest >= 0 && frames[0][0] > this.newest+1) this.clear();
@@ -45,50 +51,44 @@ class SpectralField {
 
   store(number, bytes) {
     const row=this.rows[number%this.capacity], size=this.bands;
-    const previous=this.rows[(number-1+this.capacity)%this.capacity];
-    const contiguous=previous.number===number-1;
     row.number=number;
-    let sum=0, moment=0;
-    const power=Float32Array.from(bytes,value=>(value/255)**3);
-    for (let i=0;i<size;i++) { sum+=power[i]; moment+=power[i]*i; }
-    const center=sum ? moment/sum : (size-1)/2;
+    const loudest=Math.max(...bytes);
     for (let i=0;i<size;i++) {
-      let local=0, localMoment=0, weight=0;
-      const lo=Math.max(0,i-9), hi=Math.min(size-1,i+9);
+      let local=0, moment=0, crest=bytes[i];
+      const lo=Math.max(0,i-5), hi=Math.min(size-1,i+5);
       for (let j=lo;j<=hi;j++) {
-        const k=this.kernel[j-i+9], p=power[j]*k;
-        local+=p; localMoment+=p*j; weight+=k;
+        const p=this.power[bytes[j]]*this.kernel[j-i+5];
+        local+=p; moment+=p*j;
+        crest=Math.max(crest,bytes[j]-9*Math.abs(j-i));
       }
-      // Overlapping bands let a changing instrument shift the hue of the same vertex.
-      const smooth=Math.cbrt(local/weight);
-      const energy=.76*smooth+.24*bytes[i]/255;
-      const tone=(.94*(local ? localMoment/local : i)+.06*center)/(size-1);
-      const before=contiguous?previous.energy[i]:0;
-      const attack=energy>before?.72:.36;
-      const held=before*(1-attack), fresh=energy*attack;
-      row.energy[i]=held+fresh;
-      row.tone[i]=(held+fresh)>0 ? (held*previous.tone[i]+fresh*tone)/(held+fresh) : tone;
+      row.energy[i]=bytes[i]/255;
+      row.tone[i]=moment/local/(size-1);
+      // Color the peaks in this slice. Keep weaker bands visible in the
+      // cool floor light and avoid amplifying noise in very quiet passages.
+      const strength=.45*bytes[i]+.55*crest;
+      const proximity=Math.max(0,1-(loudest-strength)/100);
+      row.heat[i]=Math.min(1,strength/100)*proximity;
     }
   }
 
   advance(now, elapsed) {
     const live=this.playing && this.newest>=0 && now-this.lastPacket<420;
     if (live) {
-      // Draw at audio time between IPC packets. Keep at most two slices in reserve.
+      // Interpolate at the audio clock between packets; catch up after UI stalls.
       const distance=this.newest-this.cursor;
-      this.cursor=Math.min(this.newest,this.cursor + elapsed/40 + Math.max(0,distance-2)*.22);
+      this.cursor=Math.min(this.newest,this.cursor + elapsed/this.hop + Math.max(0,distance-3)*.35);
     }
-    const target=live?1:0, tau=live?100:205;
+    const target=live?1:0, tau=live?40:125;
     this.gain+=(target-this.gain)*(-Math.expm1(-elapsed/tau));
     if (!live && this.gain<.003) this.gain=0;
     return live || this.gain>0;
   }
 
   sample(age, band, out) {
-    if (!this.gain) {out.energy=0;out.tone=0;return;}
+    if (!this.gain) {out.energy=0;out.tone=0;out.heat=0;return;}
     const pos=this.cursor-age, n=Math.floor(pos), phase=pos-n;
     const i=Math.floor(band), j=Math.min(i+1,this.bands-1), u=band-i;
-    let energy=0, moment=0;
+    let energy=0, moment=0, heat=0;
     for (let k=0;k<2;k++) {
       const seq=n+k;
       if (seq<0) continue;
@@ -98,8 +98,10 @@ class SpectralField {
       const left=(1-u)*row.energy[i]*w, right=u*row.energy[j]*w;
       energy+=left+right;
       moment+=left*row.tone[i]+right*row.tone[j];
+      heat+=w*((1-u)*row.heat[i]+u*row.heat[j]);
     }
     out.energy=energy*this.gain;
+    out.heat=heat*this.gain;
     out.tone=energy>0 ? moment/energy : 0;
   }
 }

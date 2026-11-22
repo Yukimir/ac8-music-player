@@ -1,11 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod wallpaper;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
+use tauri::{
+    AppHandle, CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu,
+    SystemTrayMenuItem, WindowEvent,
+};
 
 struct Worker {
     child: Child,
@@ -56,7 +61,9 @@ impl Worker {
             .map_err(|e| e.to_string())?
             == 0
         {
-            return Err("音频引擎已退出，请完整解压播放器，并检查 runtime、app 和 library 目录。".into());
+            return Err(
+                "音频引擎已退出，请完整解压播放器，并检查 runtime、app 和 library 目录。".into(),
+            );
         }
         let value: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         if let Some(error) = value.get("error").and_then(Value::as_str) {
@@ -88,18 +95,108 @@ async fn audio(request: Value, state: tauri::State<'_, AudioBridge>) -> Result<V
     guard.as_mut().unwrap().exchange(&request)
 }
 
+fn show_player(app: &AppHandle) {
+    if let Some(main) = app.get_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+}
+
+#[tauri::command]
+fn player_window(app: AppHandle, action: &str) -> Result<(), String> {
+    match action {
+        "hide" => app
+            .get_window("main")
+            .ok_or("找不到主窗口")?
+            .hide()
+            .map_err(|e| e.to_string()),
+        "show" => {
+            show_player(&app);
+            Ok(())
+        }
+        "exit" => {
+            quit(&app);
+            Ok(())
+        }
+        _ => Err("未知窗口操作".into()),
+    }
+}
+
+fn quit(app: &AppHandle) {
+    let audio = app.state::<AudioBridge>();
+    if let Ok(mut worker) = audio.worker.try_lock() {
+        worker.take();
+    }
+    app.exit(0);
+}
+
 fn main() {
     let base = std::env::current_exe()
         .expect("executable")
         .parent()
         .expect("directory")
         .to_owned();
+    let menu = SystemTrayMenu::new()
+        .add_item(CustomMenuItem::new("show", "打开播放器"))
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("play", "播放"))
+        .add_item(CustomMenuItem::new("pause", "暂停"))
+        .add_item(CustomMenuItem::new("stop", "停止"))
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("exit", "退出"));
     tauri::Builder::default()
+        .system_tray(
+            SystemTray::new()
+                .with_menu(menu)
+                .with_tooltip("AC8 音乐播放器"),
+        )
+        .on_system_tray_event(|app, event| match event {
+            SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+                "show" => show_player(app),
+                "exit" => quit(app),
+                "play" | "pause" | "stop" => {
+                    if let Some(main) = app.get_window("main") {
+                        let op = if id == "play" {
+                            "startPlayback"
+                        } else {
+                            id.as_str()
+                        };
+                        let _ = main.eval(&format!("window.trayPlayback?.('{op}')"));
+                    }
+                }
+                _ => {}
+            },
+            SystemTrayEvent::LeftClick { .. } | SystemTrayEvent::DoubleClick { .. } => {
+                show_player(app)
+            }
+            _ => {}
+        })
+        .on_window_event(|event| {
+            let window = event.window();
+            match event.event() {
+                WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
+                    api.prevent_close();
+                    let _ = window.eval("document.getElementById('closePrompt')?.showModal()");
+                }
+                WindowEvent::Destroyed if window.label() == "wallpaper" => {
+                    wallpaper::deactivated(&window.app_handle())
+                }
+                _ => {}
+            }
+        })
+        .manage(wallpaper::DesktopMode::default())
         .manage(AudioBridge {
             base,
             worker: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![audio])
+        .invoke_handler(tauri::generate_handler![
+            audio,
+            player_window,
+            wallpaper::set_wallpaper,
+            wallpaper::desktop_active,
+            wallpaper::fit_wallpaper
+        ])
         .run(tauri::generate_context!())
         .expect("AC8 Music Player");
 }

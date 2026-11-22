@@ -188,25 +188,40 @@ class CockpitEffects:
              'gun_start', 'gun_body', 'gun_tail', 'boom1', 'boom2', 'missile_hit',
              'missile_pass1', 'missile_pass2', 'engine_surge', 'engine_recovery')
 
-    def __init__(self, directory, rng=None):
+    SCENE_CLIPS = {
+        'missile': ('missile_voice','caution','danger','missile_pass1','missile_pass2'),
+        'railgun': ('rail_voice','rail_tone','boom1','boom2'),
+        'pull_up': ('pull_voice','pull_tone'), 'stall': ('stall_voice',),
+        'launch': ('launch1','launch2','missile_hit'), 'gun': ('gun_start','gun_body','gun_tail'),
+    }
+    ENGINE_LAYERS = ('engine_low','engine_cruise','engine_high')
+
+    def __init__(self, directory=None, rng=None):
         self.samples = {}
-        layers = ('engine_low', 'engine_cruise', 'engine_high')
-        for name in (*self.CLIPS, *layers):
-            with wave.open(str(directory / (name + '.wav')), 'rb') as stream:
-                channels = stream.getnchannels()
-                if stream.getframerate() != RATE or stream.getsampwidth() != 2 or channels not in (1, 2):
-                    raise ValueError('音效格式错误：' + name)
-                data = stream.readframes(stream.getnframes())
-                self.samples[name] = np.frombuffer(data, '<i2').reshape(-1, channels)
         self.distant_samples = {}
-        for name in ('missile_hit', 'boom1', 'boom2'):
-            self.samples[name],self.distant_samples[name] = explosion_profiles(self.samples[name])
         self.rng = rng or random.Random()
-        shots = {name:(self.samples[name],gain) for name,gain in [('engine_surge',.33),('engine_recovery',.26)]}
-        self.engine = EngineBed([self.samples[name] for name in layers], shots, random.Random(self.rng.getrandbits(64)))
+        self.engine = EngineBed([],{},random.Random(self.rng.getrandbits(64)))
         self.enabled = False
         self.categories = self.SCENES
+        if directory is not None:self.prepare(directory,self.SCENES,True)
         self.reset()
+
+    def prepare(self,directory,categories=(),engine=False):
+        names={name for kind in categories for name in self.SCENE_CLIPS[kind]}
+        if engine:names.update((*self.ENGINE_LAYERS,'engine_surge','engine_recovery'))
+        for name in sorted(names-self.samples.keys()):
+            path=directory(name) if callable(directory) else directory/(name+'.wav')
+            with wave.open(str(path),'rb') as stream:
+                channels=stream.getnchannels()
+                if stream.getframerate()!=RATE or stream.getsampwidth()!=2 or channels not in (1,2):
+                    raise ValueError('音效格式错误：'+name)
+                data=np.frombuffer(stream.readframes(stream.getnframes()),'<i2').reshape(-1,channels)
+            if name in ('missile_hit','boom1','boom2'):
+                data,self.distant_samples[name]=explosion_profiles(data)
+            self.samples[name]=data
+        if engine and not self.engine.layers:
+            self.engine.layers=[self.samples[name] for name in self.ENGINE_LAYERS]
+            self.engine.shots={name:(self.samples[name],gain) for name,gain in [('engine_surge',.33),('engine_recovery',.26)]}
 
     def reset(self):
         self.clock = 0
@@ -328,14 +343,21 @@ class CockpitEffects:
             self.accents.append(accent)
         self.next_scene = max(cue.stop for cue in cues) + round(self.rng.uniform(6, 15) * RATE)
 
-    def mix(self, output, gain=1.):
-        if not self.enabled or not len(output):
-            self.engine.mix(output, gain, self.clock, ())
-            return
+    def mix(self, output, gain=1., spatial=None):
         end = self.clock + len(output)
-        while self.categories and self.next_scene < end:
-            self.schedule()
-        self.engine.mix(output, gain, self.clock, self.accents)
+        if self.enabled:
+            while self.categories and self.next_scene < end:
+                self.schedule()
+        if spatial is None:
+            engine_output = output
+        else:
+            engine_output = np.zeros_like(output)
+        self.engine.mix(engine_output, gain, self.clock, self.accents if self.enabled else ())
+        if spatial is not None:
+            output += engine_output
+            spatial.add_engine(engine_output)
+        if not self.enabled or not len(output):
+            return
         while self.accents and self.accents[0].end <= end:
             self.accents.popleft()
         while self.upcoming and self.upcoming[0].start < end:
@@ -354,6 +376,8 @@ class CockpitEffects:
             if hi > fade_start:
                 data[fade_start-lo:] *= ((cue.stop-1-np.arange(fade_start, hi))/cue.fade)[:, None]
             output[lo-self.clock:hi-self.clock] += data
+            if spatial is not None:
+                spatial.add_cue(cue,lo-self.clock,lo-cue.start,data,len(self.samples[cue.clip]))
         self.active = [cue for cue in self.active if cue.stop > end]
         self.clock = end
 

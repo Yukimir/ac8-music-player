@@ -1,12 +1,13 @@
 [package]
 name = "ac8-music-player"
-version = "1.0.0"
+version = "0.8.0"
 edition = "2021"
 build = "build.rs"
 
 [dependencies]
-tauri = { version = "=1.5.4", features = ["custom-protocol"] }
+tauri = { version = "=1.5.4", features = ["custom-protocol", "system-tray"] }
 serde_json = "1"
+windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 tauri-build = "=1.5.1"

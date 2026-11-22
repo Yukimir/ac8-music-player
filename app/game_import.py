@@ -3,6 +3,7 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import json
+from contextlib import contextmanager
 import msvcrt
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ import tempfile
 import threading
 import winreg
 
-from import_cockpit import render_cue
+from import_cockpit import ENGINES, MIXES, render_cue
 
 BLOCK=65536
 
@@ -24,7 +25,7 @@ def pak_directory(path,archives):
     if not str(path).strip():return None
     root=Path(str(path).strip().strip('"')).expanduser()
     for folder in (root/'Game/Content/Paks',root/'Content/Paks',root/'Paks',root):
-        if all((folder/name).is_file() for name in archives):return folder
+        if any((folder/name).is_file() for name in archives):return folder
     return None
 
 
@@ -110,104 +111,183 @@ class LibraryImport:
         self.base=base
         raw=(base/'library/import.json').read_bytes()
         self.version=hashlib.sha256(raw).hexdigest()
-        self.spec=json.loads(raw);m=self.spec['music'];e=self.spec['effects'];c=self.spec['cues']
-        self.archives={v['pak'] for v in (*m.values(),*e.values())}
+        self.spec=json.loads(raw)
+        self.native=json.loads((base/'library/native.json').read_bytes())
+        self.archives={entry['pak'] for entry in self.spec['music'].values()}
         self.cache=(cache_root or base/'audio')/self.version[:16]
-        self.files={Path('wem')/(k+'.wem'):v['size'] for k,v in m.items()}
-        self.files.update({Path('cockpit')/(k+'.wav'):v for k,v in c.items()})
-        self.path=None;self.thread=None;self.cancel=threading.Event();self.lock=threading.RLock()
-        self.state=dict(phase='missing',game='',message='',done=0,total=len(m)+len(c),bytes=sum(self.files.values()),
-                        build=self.spec['build'],cache=str(self.cache))
-        legacy=base/'library'
-        if self.complete(legacy):self.path=legacy
-        elif self.published():self.path=self.cache
-        if self.path:self.update(phase='ready',cache=str(self.path))
-        else:self.update(game=find_game(self.archives))
-
-    def complete(self,directory):
-        try:return all((directory/p).stat().st_size==n for p,n in self.files.items())
-        except OSError:return False
-
-    def published(self):
+        self.roots=(self.cache,base/'library')
+        self.config_file=self.cache.parent/'settings.json'
+        self.verified={}
+        self.lock=threading.RLock()
+        self.cancel=threading.Event()
+        self.thread=None
+        self.revision=0
         try:
-            receipt=json.loads((self.cache/'complete.json').read_bytes())
-            return receipt['version']==self.version and self.complete(self.cache)
-        except (OSError,ValueError,KeyError):return False
+            config=json.loads(self.config_file.read_bytes())
+            game=config['game']
+        except (OSError,KeyError,ValueError):
+            config={}
+            try:previous_game=json.loads((self.cache/'complete.json').read_bytes())['game']
+            except (OSError,KeyError,ValueError):previous_game=''
+            game=previous_game if pak_directory(previous_game,self.archives) else find_game(self.archives)
+        self.source=pak_directory(game,self.archives)
+        self.config=dict(game=game,extract=config.get('extract',False),native=config.get('native',False))
+        ready=self.has_cache() or bool(config and self.source)
+        self.path=self.cache if ready else None
+        self.state=dict(phase='ready' if ready else 'missing',message='',done=0,total=0,
+                        bytes=sum(e['size'] for e in self.spec['music'].values())+sum(self.spec['cues'].values()),
+                        nativeBytes=sum(e['size'] for e in self.native.values()),cache=str(self.cache))
+
+    def has_cache(self):
+        return any(next((root/folder).glob(pattern),None) for root in self.roots
+                   for folder,pattern in [('wem','*.wem'),('native','*.wem'),('cockpit','*.wav')])
+
+    def status(self):
+        with self.lock:return {**self.config,**self.state,'configured':self.path is not None}
 
     def update(self,**values):
         with self.lock:self.state.update(values)
 
-    def status(self):
-        with self.lock:return dict(self.state)
+    def cached(self,relative,size,sha=None):
+        for root in self.roots:
+            path=root/relative
+            try:
+                stat=path.stat()
+                if stat.st_size!=size:continue
+                stamp=(stat.st_size,stat.st_mtime_ns)
+                if sha and self.verified.get(path)!=stamp:
+                    if digest(path)!=sha:continue
+                    self.verified[path]=stamp
+                return path
+            except FileNotFoundError:continue
+        return None
 
-    def start(self,game):
+    @contextmanager
+    def codec(self):
+        with subprocess.Popen([sys.executable,'-B',self.base/'decoder/unpack_blocks.py'],
+                              stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)) as proc:
+            try:yield proc
+            finally:proc.stdin.close()
+
+    def unpack(self,source,entry,dest,codec,label):
+        if source is None or not (source/entry['pak']).is_file():
+            raise ValueError(f'缺少音频 {label}。请在右上角设置里选择游戏目录，或放回已提取的素材。')
+        extract(source,entry,dest,self.spec['build'],codec)
+
+    @contextmanager
+    def music(self,key,scratch):
+        native=key.startswith('native-')
+        name=key.removeprefix('native-') if native else key
+        entry=(self.native if native else self.spec['music'])[name]
+        relative=Path('native' if native else 'wem')/(name+'.wem')
+        cached=self.cached(relative,entry['size'],entry['sha256'])
+        if cached:
+            yield cached
+            return
+        temp=scratch/(key+'.wem')
+        try:
+            with self.codec() as codec:self.unpack(self.source,entry,temp,codec,name)
+            yield temp
+        finally:temp.unlink(missing_ok=True)
+
+    def cue(self,name,scratch,source,codec):
+        size=self.spec['cues'][name]
+        relative=Path('cockpit')/(name+'.wav')
+        cached=self.cached(relative,size)
+        if cached:return cached
+        keys=[ENGINES[name]] if name in ENGINES else [layer[0] for layer in MIXES[name]]
+        for key in keys:
+            dest=scratch/(str(key)+'.wem')
+            if not dest.exists():self.unpack(source,self.spec['effects'][str(key)],dest,codec,name)
+        dest=scratch/(name+'.wav')
+        render_cue(name,self.base/'decoder/vgmstream-cli.exe',scratch,dest)
+        if dest.stat().st_size!=size:raise ValueError('音效校验失败：'+name)
+        return dest
+
+    @contextmanager
+    def cockpit(self):
+        with tempfile.TemporaryDirectory(prefix='AC8-SE-') as tmp,self.codec() as codec:
+            scratch=Path(tmp)
+            yield lambda name:self.cue(name,scratch,self.source,codec)
+
+    def commit(self,config,source):
+        self.config_file.parent.mkdir(parents=True,exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=self.config_file.parent,delete=False) as tmp:
+            path=Path(tmp.name)
+        try:
+            path.write_text(json.dumps(config,ensure_ascii=False),encoding='utf8')
+            path.replace(self.config_file)
+        finally:path.unlink(missing_ok=True)
         with self.lock:
-            if self.path or self.thread and self.thread.is_alive():return self.status()
-            if self.published():
-                self.path=self.cache;self.update(phase='ready');return self.status()
-            source=pak_directory(game,self.archives)
-            if not source:
-                self.update(phase='error',message='没有找到所需资源包，请选择 ACE COMBAT 8 的安装目录。')
-                return self.status()
-            self.update(phase='running',game=str(game),done=0,message='正在核对游戏音频')
-            self.thread=threading.Thread(target=self.run,args=(source,),daemon=True)
-            self.thread.start();return self.status()
+            self.config=config
+            self.source=source
+            self.path=self.cache
+            self.revision+=1
+            self.update(phase='ready',message='',done=self.state['total'])
 
-    def run(self,source):
+    def start(self,game,persist=False,native=False):
+        with self.lock:
+            if self.thread and self.thread.is_alive():return self.status()
+            self.cancel.clear()
+            game=game.strip()
+            source=pak_directory(game,self.archives)
+            config=dict(game=game,extract=bool(persist),native=bool(persist and native))
+            if source is None and (not self.has_cache() or (game and game!=self.config['game'])):
+                self.update(phase='error',message='没有找到游戏资源包。请选择游戏目录，或使用已提取的音频。')
+            elif persist:
+                self.update(phase='running',done=0,total=len(self.spec['music'])+len(self.spec['cues'])+
+                            (len(self.native) if native else 0),message='正在检查已提取的素材')
+                self.thread=threading.Thread(target=self.run,args=(config,source),daemon=True)
+                self.thread.start()
+            else:self.commit(config,source)
+            return self.status()
+
+    def run(self,config,source):
         try:
             self.cache.mkdir(parents=True,exist_ok=True)
             with (self.cache/'import.lock').open('a+b') as lock:
                 lock.seek(0)
                 try:msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
-                except OSError:raise ValueError('另一个播放器正在导入音频，完成后可在此重试。')
+                except OSError:raise ValueError('另一个播放器正在提取音频，请稍后重试。')
                 try:
-                    if not self.published():self.populate(source)
+                    self.populate(source,config['native'])
+                    self.commit(config,source)
                 finally:
                     lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_UNLCK,1)
-            self.path=self.cache;self.update(phase='ready',message='')
-        except PermissionError as exc:
-            self.update(phase='error',message=f'没有读写权限，请确认游戏可读、播放器所在目录可写。{exc}')
         except Exception as exc:self.update(phase='error',message=str(exc))
 
-    def populate(self,source):
-        with subprocess.Popen([sys.executable,'-B',self.base/'decoder/unpack_blocks.py'],
-                              stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
-                              creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)) as codec:
-            try:self.extract_library(source,codec)
-            finally:codec.stdin.close()
-
-    def extract_library(self,source,codec):
-        music=self.spec['music'];cues=self.spec['cues']
-        missing=sum(n for p,n in self.files.items() if not (self.cache/p).is_file())
-        if shutil.disk_usage(self.cache).free<missing+96*1024**2:
-            raise ValueError(f'播放器所在磁盘空间不足，约需 {(missing+96*1024**2)/1024**3:.1f} GiB。')
-        (self.cache/'wem').mkdir(exist_ok=True);(self.cache/'cockpit').mkdir(exist_ok=True)
-        def check():
-            if self.cancel.is_set():raise InterruptedError('导入已中断，下次会复用已校验的音源。')
-        for i,(key,entry) in enumerate(music.items()):
-            check();self.update(done=i,message=f'正在导入 BGM　{i+1} / {len(music)}')
-            path=self.cache/'wem'/(key+'.wem')
-            if path.is_file() and path.stat().st_size==entry['size'] and digest(path)==entry['sha256']:continue
-            temp=path.with_suffix('.part')
-            extract(source,entry,temp,self.spec['build'],codec);temp.replace(path)
-        self.update(done=len(music),message='正在读取座舱音效')
-        with tempfile.TemporaryDirectory(dir=self.cache,prefix='se-') as tmp:
+    def populate(self,source,include_native):
+        groups=[('wem','BGM',self.spec['music'])]
+        if include_native:groups.append(('native','原生 7.1.4',self.native))
+        tasks=[]
+        for folder,label,entries in groups:
+            for name,entry in entries.items():
+                tasks.append((Path(folder)/(name+'.wem'),label,entry['size'],entry))
+        for name,size in self.spec['cues'].items():
+            tasks.append((Path('cockpit')/(name+'.wav'),'座舱音效',size,None))
+        missing=[];space=0
+        for rel,label,size,entry in tasks:
+            if self.cancel.is_set():raise InterruptedError('已中断提取')
+            if not self.cached(rel,size,entry['sha256'] if entry else None):
+                missing.append((rel,label,entry))
+                space+=size
+        if not missing:return
+        if source is None:raise ValueError(f'还缺 {len(missing)} 个素材。请选择游戏目录后继续提取。')
+        if shutil.disk_usage(self.cache).free<space+96*1024**2:
+            raise ValueError(f'磁盘空间不足，还需约 {space/1024**3:.2f} GiB。')
+        with tempfile.TemporaryDirectory(dir=self.cache,prefix='import-') as tmp,self.codec() as codec:
             scratch=Path(tmp)
-            for key,entry in self.spec['effects'].items():
-                check();extract(source,entry,scratch/(key+'.wem'),self.spec['build'],codec)
-            for i,(name,size) in enumerate(cues.items()):
-                check();self.update(done=len(music)+i,message=f'正在生成 SE　{i+1} / {len(cues)}')
-                dest=self.cache/'cockpit'/(name+'.wav')
-                temp=dest.with_suffix('.part')
-                render_cue(name,self.base/'decoder/vgmstream-cli.exe',scratch,temp)
-                if temp.stat().st_size!=size:raise ValueError('生成的音效长度不匹配：'+name)
-                temp.replace(dest)
-        check()
-        if not self.complete(self.cache):raise ValueError('音频库不完整，请重试导入。')
-        receipt=self.cache/'complete.tmp'
-        receipt.write_text(json.dumps(dict(version=self.version,game=str(source))),encoding='utf8')
-        receipt.replace(self.cache/'complete.json')
-        self.update(done=self.state['total'])
+            for i,(rel,label,entry) in enumerate(missing,len(tasks)-len(missing)):
+                if self.cancel.is_set():raise InterruptedError('已中断提取')
+                self.update(done=i,message=f'正在提取 {label}　{i+1} / {len(tasks)}')
+                dest=self.cache/rel
+                dest.parent.mkdir(exist_ok=True)
+                if entry:
+                    temp=scratch/'media.part'
+                    self.unpack(source,entry,temp,codec,rel.stem)
+                else:temp=self.cue(rel.stem,scratch,source,codec)
+                if temp.parent==scratch:temp.replace(dest)
 
     def close(self):
         self.cancel.set()

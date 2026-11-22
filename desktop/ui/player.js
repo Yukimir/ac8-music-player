@@ -16,7 +16,8 @@
     {request: Object.assign({op},payload)});
   let catalog = [], visible = [], songs = new Map(), entries = new Map(), focused = null;
   let state = null, shownSong = null, shownSection = '', diagram = null, pendingDiagram = '';
-  let barsLimit = -1, dragging = false, shuffle = false;
+  let barsLimit = -1, dragging = false;
+  const modeLabels={ordered:'顺序播放',shuffle:'随机播放',repeatOne:'单曲循环'};
   let actionChain = Promise.resolve(), revision = 0, busy = 0, polling = false, ended = null;
   let uiError = '', laneViews = [];
   let sectionClick = null;
@@ -45,8 +46,7 @@
   function listChanged(scroll=false) {
     const phrase = byId('query').value.trim().toLocaleLowerCase();
     const category = byId('filter').value;
-    visible = catalog.filter(s => (category === '全部曲目' || s.bank === category) &&
-      s.search.includes(phrase));
+    visible = catalog.filter(s => s.bank===category && s.search.includes(phrase));
     if (!visible.some(s=>s.id===focused))
       focused = visible.some(s=>s.id===state?.song) ? state.song : (visible[0]?.id ?? null);
     const frag = document.createDocumentFragment();
@@ -103,7 +103,7 @@
   function stepSong(delta) {
     if (!visible.length) return;
     let ix=visible.findIndex(s=>s.id===state?.song);
-    if (shuffle && visible.length>1) delta=1+Math.floor(Math.random()*(visible.length-1));
+    if (state?.playMode==='shuffle' && visible.length>1) delta=1+Math.floor(Math.random()*(visible.length-1));
     if (ix<0) ix=delta>0?-1:0;
     const next=visible[(ix+delta+visible.length)%visible.length].id;
     focusSong(next); selectSong(next);
@@ -203,6 +203,8 @@
     byId('play').disabled=false;
     byId('playIcon').textContent=isActive?'Ⅱ':'▶';
     byId('playText').textContent=isActive?'暂停':s.finished?'重播':'播放';
+    const order=byId('order'), label=modeLabels[s.playMode];
+    if (order.textContent!==label) order.textContent=label;
     byId('duration').textContent=time(s.length);
     byId('seek').disabled=!s.ready || s.bridge;
     if (!dragging) {
@@ -210,6 +212,11 @@
       position(s.position,s.length);
     }
     masterSlider(s.master);
+    const kind=s.sourceKind ? '（'+s.sourceKind+'）' : '';
+    byId('outputLayout').textContent=s.outputLayout ? s.outputLayout+kind : '自动';
+    const widths=(s.sourceChannels || []).map(n=>n===12?'7.1.4':n===2?'2.0':'单声道');
+    byId('outputLayout').title=[widths.length?'曲目音源 '+widths.join(' / '):'',s.outputBackend || '播放时检测输出设备'].filter(Boolean).join(' · ');
+    byId('volume').title=s.outputLayout?'总音量 · '+s.outputLayout+' · '+s.outputBackend:'总音量';
     seSlider(s.seVolume);
     byId('effects').checked=Boolean(s.effects);
     if (!categoryEdits && s.effectCategories) showCategories(s.effectCategories);
@@ -240,7 +247,7 @@
     byId('loopInfo').title='循环区间 · '+(s.effectiveRepeat===0?'无限循环':s.effectiveRepeat+' 遍');
     paintLanes(s); drawSpectrum(byId('spectrum'),s.levels);
     report(s.error || uiError);
-    if (s.finished && ended!==s.song && visible.length>1 && s.wantsPlay) {
+    if (s.finished && s.playMode!=='repeatOne' && ended!==s.song && visible.length>1 && s.wantsPlay) {
       ended=s.song; stepSong(1);
     } else if (!s.finished) ended=null;
   }
@@ -266,10 +273,7 @@
   byId('play').onclick=()=>command('play');
   byId('previous').onclick=()=>stepSong(-1);
   byId('following').onclick=()=>stepSong(1);
-  byId('order').onclick=()=>{
-    shuffle=!shuffle; byId('order').textContent=shuffle?'随机播放':'顺序播放';
-    byId('order').setAttribute('aria-pressed',String(shuffle));
-  };
+  byId('order').onclick=()=>command('cyclePlayMode');
   byId('nextPhase').onclick=()=>onSection('nextSection');
   byId('effects').onchange=e=>command('effects',{enabled:e.target.checked});
   byId('engineBed').onchange=e=>command('engineBed',{enabled:e.target.checked});
@@ -368,8 +372,47 @@
   }
   const masterSlider=volumeSlider('volume');
   const seSlider=volumeSlider('seVolume',byId('seLevel'),2);
+  const eye=byId('toggleUi');
+  const invokeDesktop=(name,args={})=>window.__TAURI__.tauri.invoke(name,args);
+  const wallpaperButton=byId('wallpaperMode');
+  window.desktopModeChanged=enabled=>{
+    window.setSandTableEnabled(!enabled);
+    document.body.classList.toggle('desktop-mode',enabled);
+    wallpaperButton.setAttribute('aria-pressed',String(enabled));
+    wallpaperButton.title=enabled?'关闭桌面背景':'设为桌面背景';
+  };
+  // Reopening the WebView can leave the native wallpaper running.
+  if (window.__TAURI__?.tauri) {
+    invokeDesktop('desktop_active').then(active=>{
+      if (typeof active==='boolean' && !wallpaperButton.disabled) window.desktopModeChanged(active);
+    }).catch(()=>{});
+  }
+  wallpaperButton.onclick=async()=>{
+    wallpaperButton.disabled=true;
+    try {
+      const enabled=await invokeDesktop('set_wallpaper',{enabled:wallpaperButton.getAttribute('aria-pressed')!=='true'});
+      window.desktopModeChanged(enabled);
+    } catch(e){uiError=String(e);report(uiError);}
+    finally {wallpaperButton.disabled=false;}
+  };
+  const closePrompt=byId('closePrompt');
+  closePrompt.addEventListener('close',()=>{
+    const action=closePrompt.returnValue;
+    closePrompt.returnValue='';
+    if (action==='exit' || action==='hide') invokeDesktop('player_window',{action}).catch(e=>report(String(e)));
+  });
+  window.trayPlayback=op=>{
+    if (state) command(op);
+    else if (op==='startPlayback') invokeDesktop('player_window',{action:'show'});
+  };
+  eye.onclick=()=>{
+    const hidden=eye.closest('.shell').classList.toggle('ui-hidden');
+    eye.setAttribute('aria-expanded',String(!hidden));
+    eye.title=hidden?'显示界面':'隐藏界面';
+    eye.setAttribute('aria-label',eye.title);
+  };
   document.addEventListener('keydown',e=>{
-    if (byId('libraryImport').open) return;
+    if (byId('libraryImport').open || closePrompt.open) return;
     if (e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
     const target=e.target, typing=target.tagName==='INPUT' || target.tagName==='SELECT';
     if (e.key==='Escape' && target===byId('query')) {
@@ -377,6 +420,7 @@
     }
     if (typing || target.closest('#arrangements')) return;
     const key=e.key.toLowerCase();
+    if (eye.getAttribute('aria-expanded')==='false' && ['arrowdown','arrowup','home','end','/'].includes(key)) return;
     if (key==='arrowdown' || key==='arrowup' || key==='home' || key==='end') {
       if (!visible.length) return;
       const index=visible.findIndex(s=>s.id===focused);
@@ -406,6 +450,14 @@
   async function init() {
     try {
       await window.prepareAudioLibrary(api);
+      const settings=byId('sourceSettings');
+      settings.disabled=false;
+      settings.onclick=async()=>{
+        settings.disabled=true;
+        try {await window.prepareAudioLibrary(api,true);await poll();}
+        catch(e) {report(String(e));}
+        finally {settings.disabled=false;settings.focus();}
+      };
       option(byId('repeat'),null,'游戏预设');
       for (const n of repeatValues) option(byId('repeat'),n,n===0?'无限':n+' 遍');
       catalog=await api('library');
@@ -418,7 +470,11 @@
       const saved=savedCategories();
       if (saved!==null) await command('effectCategories',{categories:saved});
       await poll();
-      setInterval(()=>{if (!document.hidden || state?.playing) poll();},100);
+      async function refresh() {
+        if (!document.hidden || state?.playing) await poll();
+        setTimeout(refresh,state?.playing && !document.hidden ? 35 : 100);
+      }
+      setTimeout(refresh,35);
       document.addEventListener('visibilitychange',()=>{if (!document.hidden) poll();});
     } catch(e) {
       byId('title').textContent='曲库未能载入'; report(String(e));

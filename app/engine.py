@@ -1,6 +1,8 @@
 """Sample-clock playback for the extracted AC8 Wwise music objects."""
 import copy
 from collections import deque
+from contextlib import nullcontext
+from surround import FULL, native_matrix
 import math
 import struct
 import subprocess
@@ -15,8 +17,9 @@ DEFAULT_RULE = dict(sync=7, cue=0, post=1, pre=1, out=[0,0,4], inc=[0,0,4], entr
 
 
 class Media:
-    def __init__(self, root, library=None):
+    def __init__(self, root, library=None, resolver=None):
         self.root = root
+        self.resolver = resolver
         self.library = library or root/'library'
         self.temp = tempfile.TemporaryDirectory(prefix="AC8-audio-")
         self.files = {}
@@ -32,9 +35,11 @@ class Media:
             progress(i, len(keep))
             if key in self.files: continue
             path = Path(self.temp.name) / (key + ".wav")
-            proc = subprocess.run([str(self.root/'decoder'/'vgmstream-cli.exe'), '-i', '-o', str(path),
-                                   str(self.library/'wem'/(key+'.wem'))],
-                                  capture_output=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            source = (self.resolver.music(key,path.parent) if self.resolver else
+                      nullcontext(self.library/'wem'/(key+'.wem')))
+            with source as wem:
+                proc = subprocess.run([self.root/'decoder/vgmstream-cli.exe','-i','-o',path,wem],
+                                      capture_output=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             if proc.returncode or not path.exists():
                 raise ValueError(f"无法解码音频 {key}")
             with path.open('rb') as f:
@@ -49,7 +54,12 @@ class Media:
                     if tag == b'fmt ':
                         fmt = f.read(size)
                         codec, channels, rate = struct.unpack_from('<HHI',fmt)
-                        if codec!=1 or rate!=RATE or channels not in (1,2) or struct.unpack_from('<H',fmt,14)[0]!=16:
+                        if codec==0xfffe and len(fmt)>=40 and fmt[24:40]==bytes.fromhex('0100000000001000800000aa00389b71'):
+                            if channels==12 and struct.unpack_from('<I',fmt,20)[0]!=FULL:
+                                raise ValueError('原生素材的声道位置不匹配')
+                            codec=1
+                        expected=(12,) if key.startswith('native-') else (1,2)
+                        if codec!=1 or rate!=RATE or channels not in expected or struct.unpack_from('<H',fmt,14)[0]!=16:
                             raise ValueError("不支持的解码格式")
                     else: f.seek(size,1)
                     if size%2: f.seek(1,1)
@@ -106,6 +116,7 @@ class Transport:
         self.master = .65
         self.se_volume = 1.
         self.playing = False
+        self.play_mode = 'ordered'
         self.finished = False
         self.clock = 0
         self.voices = []
@@ -117,6 +128,14 @@ class Transport:
         self.effects = None
         self.arrangement = None
         self.step_index = 0
+
+    @property
+    def audio(self):return self._audio
+
+    @audio.setter
+    def audio(self,sources):
+        self._audio=sources
+        self.has_native=any(raw.shape[1]==12 for raw in sources.values())
 
     def assets(self,song):
         ids=set(song['order'])
@@ -131,12 +150,12 @@ class Transport:
         self.arrangement=arrangement
         self.settings={}
         self.mutes={}
-        self.last_pos={}
         if self.effects is not None:self.effects.reset()
         self.restart(sid)
         self.playing=False
 
     def restart(self,sid=None):
+        self.last_pos.clear()
         first=self.arrangement['steps'][0]['segment'] if self.arrangement else sid or self.song['order'][0]
         self.start(first)
 
@@ -343,12 +362,13 @@ class Transport:
         initial=lane_gain(previous,self.clock) if previous and self.clock<previous[1] else float(old)
         ramps[lane['key']]=(self.clock,self.clock+MANUAL_FADE_FRAMES,initial,float(on))
 
-    def mix_voice(self,v,out,n):
+    def mix_voice(self,v,out,n,native=None):
         a=max(self.clock,v['start'])
         b=min(self.clock+n,v['end'])
         if a>=b:return
         s=self.segs[v['id']];pa=a-v['origin'];pb=b-v['origin']
         block=np.zeros((b-a,2),np.float32)
+        bed=np.zeros((b-a,12),np.float32) if native is not None else None
         for lane in s['lanes']:
             ramp=v['ramps'].get(lane['key'])
             enabled=self.enabled(lane,v)
@@ -368,17 +388,22 @@ class Transport:
                 if ramp and a<ramp[1]:
                     g=g*lane_gain(ramp,np.arange(lo,hi)+v['origin'])
                 if isinstance(g,np.ndarray):g=g[:,None]
-                block[lo-pa:hi-pa]+=arr*g
+                target=bed if raw.shape[1]==12 else block
+                target[lo-pa:hi-pa]+=arr*g
         for k in ('inc','out'):
             fade=v[k]
             if fade:
                 lo,hi,curve=fade
                 t=np.clip((np.arange(a,b)-lo)/max(1,hi-lo),0.,1.)
-                block*=shape(t if k=='inc' else 1-t,curve)[:,None]
+                gain=shape(t if k=='inc' else 1-t,curve)[:,None]
+                block*=gain
+                if bed is not None:bed*=gain
         out[a-self.clock:b-self.clock]+=block
+        if bed is not None:native[a-self.clock:b-self.clock]+=bed
 
-    def render(self,n):
+    def render(self,n,spatial=None):
         mixed=np.zeros((n,2),np.float32);written=0
+        native=np.zeros((n,12),np.float32) if self.has_native else None
         while written<n and self.playing:
             boundary=self.pending[0][0] if self.pending else self.end_at
             split=boundary
@@ -392,10 +417,14 @@ class Transport:
                 if events:split=min(split,events[0][0])
             count=min(n-written,max(0,split-self.clock))
             if count:
-                for v in self.voices:self.mix_voice(v,mixed[written:written+count],count)
+                portion=slice(written,written+count)
+                for v in self.voices:self.mix_voice(v,mixed[portion],count,None if native is None else native[portion])
                 self.clock+=count;written+=count
             if self.clock<boundary:continue
             if not self.pending:
+                if self.play_mode=='repeatOne':
+                    self.restart()
+                    continue
                 self.playing=False;self.finished=True;break
             _,v=self.pending.pop(0)
             self.last_pos[self.key]=min(max(self.segs[self.key]['entry'],self.position()),self.segs[self.key]['exit']-1)
@@ -406,6 +435,12 @@ class Transport:
             if not v.get('bridge'):
                 if v.get('fromQueue'):self.section_queue.popleft()
                 self.plan()
+        if spatial is not None:
+            spatial.begin(mixed)
+            if self.effects is not None:
+                self.effects.mix(mixed[:written],self.se_volume,None if spatial.front_only else spatial)
+            return spatial.finish(mixed,self.master,native) if native is not None else spatial.finish(mixed,self.master)
         if self.effects is not None:self.effects.mix(mixed[:written], self.se_volume)
+        if native is not None:mixed+=native @ native_matrix(3)
         return np.clip(mixed*self.master,-32768,32767).astype('<i2')
 

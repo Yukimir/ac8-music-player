@@ -8,8 +8,24 @@ select{border:0;border-radius:0;background-color:transparent}
 option{background:#10283e;color:white}
 button:focus-visible,select:focus-visible,input:focus-visible,#list:focus-visible{outline:1px solid var(--cyan);outline-offset:3px}
 [hidden]{display:none!important}
-#terrain{position:fixed;inset:0;height:100%;width:100%;pointer-events:none}
+#terrain,#terrain-points{position:fixed;inset:0;height:100%;width:100%;pointer-events:none}
+.desktop-mode #terrain,.desktop-mode #terrain-points{visibility:hidden}
+#closePrompt{max-width:min(410px,90vw);padding:23px;color:var(--white);background:#081d30;border:1px solid #668aa4}
+#closePrompt::backdrop{background:#020b18ba}
+#closePrompt h2{font-size:22px}
+#closePrompt p{color:var(--soft)}
+#closePrompt button{padding:5px 10px;border:1px solid var(--line)}
 #libraryImport{width:min(460px,88vw);padding:25px 28px;border:1px solid #668aa4;background:#081d30;color:var(--white);box-shadow:0 10px 80px #000a}
+#importCancel{border:1px solid var(--line);padding:3px 10px;color:var(--soft)}
+#importCancel:hover{color:var(--white);border-color:var(--cyan)}
+.source-options{display:grid;gap:8px;margin:18px 0 0;padding:10px 0;border:0}
+.source-options legend{font-size:13px;color:var(--soft)}
+.source-options label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.source-options input{accent-color:var(--cyan)}
+.source-options .native-option{margin-left:22px}
+.native-option:has(input:disabled){opacity:.48}
+.source-actions{display:flex;justify-content:flex-end;gap:8px}
+#importInfo{min-height:2.8em}
 #libraryImport::backdrop{background:#020b18cc}
 #libraryImport h2{font-size:23px;margin:0 0 12px}
 #libraryImport p,#libraryImport label{font-size:13px;color:var(--soft)}
@@ -25,6 +41,17 @@ h1,h2{font-weight:500;line-height:1.1;text-shadow:0 0 11px #8dbfff5c}
 h1{position:relative;font-size:clamp(21px,2vw,33px);letter-spacing:.065em;padding:0 10px;border-inline:2px solid #d5edffcc}
 h1:before{content:"";position:absolute;right:100%;width:20vw;top:52%;height:2px;background:linear-gradient(90deg,transparent,#1978ff9c 45%,#93d7ffcf);box-shadow:0 0 9px #5d93ff}
 .header-right,.vol{display:flex;gap:14px;align-items:center}
+.header-icon{display:grid;place-items:center;width:32px;height:32px;padding:5px;color:var(--soft);border:1px solid transparent;transition:color .15s,background .15s,opacity .15s}
+.header-icon:hover,.header-icon:focus-visible{color:var(--white);border-color:var(--line);background:var(--fill)}
+.header-icon+.header-icon{margin-left:-9px}
+.header-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linejoin:round;stroke-linecap:round}
+#cameraMode .camera-play{fill:currentColor;stroke:none;opacity:0}
+#cameraMode[aria-pressed=true],#wallpaperMode[aria-pressed=true]{color:var(--cyan);border-color:var(--line);background:var(--fill)}
+#cameraMode[aria-pressed=true] .camera-play{opacity:1}
+.ui-hidden{visibility:hidden}
+.ui-hidden #toggleUi{visibility:visible;opacity:.58}
+.ui-hidden #toggleUi:hover,.ui-hidden #toggleUi:focus-visible{opacity:1}
+#toggleUi[aria-expanded=true] .eye-off,#toggleUi[aria-expanded=false] .eye-open{display:none}
 .game{font-size:12px;letter-spacing:.17em;color:var(--soft);font-weight:600}
 .game b{font-size:16px;color:white}
 .vline{height:18px;border-left:1px solid var(--line)}

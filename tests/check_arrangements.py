@@ -42,6 +42,25 @@ assert t.key==2 and t.run==1 and t.step_index==1 and not t.enabled(segs[2]['lane
 assert (t.render(6000)==0).all() and t.key==3 and t.active['bridge']
 t.render(6000);assert t.key==1 and t.step_index==2
 t.render(6000);assert t.finished and not t.playing
+# Full-song repeat must restart the arrangement (including its opening mask)
+# within the same output block, even when its first step is not song.order[0].
+t.play_mode='repeatOne'
+t.restart();t.playing=True
+wrapped=t.render(30000+2001)[:,0]
+assert (wrapped[30000:32000]==1000).all() and wrapped[-1]==2000
+assert (t.key,t.step_index,t.run,t.position(),t.playing,t.finished)==(2,0,1,2001,True,False)
+t.play_mode='ordered'
+t.render(30000-2001);assert t.finished and not t.playing
+# A single-file track can wrap twice in one device callback without dropping
+# a sample or reloading its audio.
+t.select(song)
+t.audio['1'][:,0]=np.arange(1,6001)
+t.play_mode='repeatOne';t.playing=True
+assert np.array_equal(t.render(12019)[:,0],np.resize(t.audio['1'][:,0],12019))
+assert t.position()==19 and t.run==1 and t.playing
+t.audio['1'][:,0]=1000
+t.play_mode='ordered'
+t.select(song,arrangement=a)
 t.restart();assert (t.key,t.run,t.step_index)==(2,1,0)
 t.start(2,3500,step_index=0,run=2);assert t.active['mask']=={'1','2'}
 t.start(2,500,step_index=0,run=2);assert t.active['mask']=={'2'}

@@ -15,18 +15,36 @@ from arrangement import normalize
 
 DOUBLE_CLICK_MS = ctypes.windll.user32.GetDoubleClickTime()
 
+def add_native_media(score,entries):
+    # Keep stable UI IDs outside the 32-bit Wwise object ID range.
+    for key,entry in sorted(entries.items(),key=lambda pair:(not pair[1]['event'],pair[1]['title'],pair[0])):
+        media_id=int(key.removeprefix('pak-'))
+        sid=(2 if key.startswith('pak-') else 1)*2**32+media_id
+        name=str(sid)
+        frames=entry['samples']
+        lane=dict(key=name+'.0',id=sid,variant=None,on=True,db=0,
+                  clips=[dict(src='native-'+key,at=0,end=frames,offset=0,env=[])])
+        score['segments'][name]=dict(id=sid,anc=[sid],length=frames,entry=0,exit=frames,marks=[],
+                                     bar=0,beat=0,grid=0,gridOffset=0,tempo=0,lanes=[lane])
+        score['songs'].append(dict(id=sid,title=entry['title'],event=entry['event'] or key,
+                                   originalLabel=entry['origin'],bank='原生 7.1.4',context=entry['origin'],
+                                   order=[sid],loops={name:1},next={name:None},labels={name:'全段'}))
+
+
 class Player:
     effect_categories = CockpitEffects.SCENES
 
-    def __init__(self, base, library=None):
+    def __init__(self, base, library=None, resolver=None):
         data=json.loads((base/'library/score.json').read_text(encoding='utf8'))
+        self.resolver=resolver
+        if resolver:add_native_media(data,resolver.native)
         self.catalog={s['id']:s for s in data['songs']}
         self.defaults=json.loads((base/'library/arrangements.json').read_bytes())
         library=library or base/'library'
         self.effects_dir=library/'cockpit'
         self.transport=Transport(data)
         self.lock=threading.RLock()
-        self.media=Media(base,library)
+        self.media=Media(base,library,resolver)
         self.spectrum=MixSpectrum(RATE)
         self.output=Output(self.transport,self.lock,self.output_error,self.spectrum.push)
         self.loader=ThreadPoolExecutor(1)
@@ -127,6 +145,14 @@ class Player:
                     if self.generation==gen:self.error=str(exc)
         self.loader.submit(work)
 
+    def visual_state(self):
+        with self.lock:
+            t=self.transport;s=t.segs[t.key]
+            return dict(song=t.song['id'],playing=t.playing,ready=self.ready,error=self.error,
+                        bar=s['bar'],clock=t.clock,gridOrigin=t.active['origin']+s['entry'],sampleRate=RATE,
+                        spectrumEpoch=self.spectrum.epoch,spectrumHopMs=self.spectrum.hop_ms,
+                        spectralFrames=list(self.spectrum.frames) if t.playing else [])
+
     def state(self):
         with self.lock:
             t=self.transport;s=t.segs[t.key];rep,bars=t.settings.get(t.key,(None,None))
@@ -134,18 +160,25 @@ class Player:
             if t.arrangement:
                 rep=count
                 if not t.active.get('bridge'):bars=t.arrangement['steps'][t.step_index].get('bars')
-            frames=list(self.spectrum.frames) if t.playing else []
-            return dict(song=t.song['id'],segment=t.key,position=t.position(),length=s['length'],entry=s['entry'],exit=s['exit'],
-                        effectiveEnd=end,bar=s['bar'],tempo=s['tempo'],queued=t.queued,bridge=bool(t.active.get('bridge')),
+            visual=self.visual_state()
+            frames=visual['spectralFrames']
+            active=[lane for lane in s['lanes'] if t.enabled(lane)] or s['lanes']
+            widths={t.audio[c['src']].shape[1] for lane in active for c in lane['clips']
+                    if c['src'] in t.audio}
+            source_kind=('原生' if widths=={12} else '混音') if widths else ''
+            if widths=={2} and self.output.layout=='2.0':source_kind='原生'
+            return dict(**visual,segment=t.key,position=t.position(),length=s['length'],entry=s['entry'],exit=s['exit'],
+                        effectiveEnd=end,tempo=s['tempo'],queued=t.queued,bridge=bool(t.active.get('bridge')),
                         sectionQueue=list(t.section_queue),effects=bool(t.effects and t.effects.enabled),
                         effectCategories=self.effect_categories,
                         engineBed=bool(t.effects and t.effects.engine.enabled),seVolume=t.se_volume,
-                        doubleClickMs=DOUBLE_CLICK_MS,
+                        doubleClickMs=DOUBLE_CLICK_MS,outputLayout=self.output.layout,outputBackend=self.output.backend,
+                        sourceKind=source_kind,sourceChannels=sorted(widths),
                         arrangementId=t.arrangement['id'] if t.arrangement else 'free',stepIndex=t.step_index,
-                        repeat=rep,bars=bars,effectiveRepeat=count,run=t.run,playing=t.playing,finished=t.finished,
-                        ready=self.ready,wantsPlay=self.autoplay,progress=self.progress,error=self.error,master=t.master,
-                        enabled=[t.enabled(l) for l in s['lanes']],spectrumEpoch=self.spectrum.epoch,
-                        spectralFrames=frames,levels=[x/255 for x in frames[-1][1]] if frames else [])
+                        repeat=rep,bars=bars,effectiveRepeat=count,run=t.run,finished=t.finished,playMode=t.play_mode,
+                        wantsPlay=self.autoplay,progress=self.progress,master=t.master,
+                        enabled=[t.enabled(l) for l in s['lanes']],
+                        levels=[x/255 for x in frames[-1][1]] if frames else [])
 
     def diagram(self):
         with self.lock:
@@ -168,6 +201,11 @@ class Player:
             self.peaks[sid]=result
             return result
 
+    def prepare_effects(self,effects,categories,engine=False):
+        if self.resolver:
+            with self.resolver.cockpit() as cue:effects.prepare(cue,categories,engine)
+        else:effects.prepare(self.effects_dir,categories,engine)
+
     def dispatch(self,msg):
         op=msg['op'];t=self.transport
         if op=='library':return self.songs
@@ -179,16 +217,20 @@ class Player:
             selected=msg.get('categories')
             if not isinstance(selected,list) or any(c not in CockpitEffects.SCENES for c in selected):
                 raise ValueError('无效的音效类别')
+            categories=tuple(c for c in CockpitEffects.SCENES if c in selected)
+            if t.effects and t.effects.enabled:self.prepare_effects(t.effects,categories)
             with self.lock:
-                self.effect_categories=tuple(c for c in CockpitEffects.SCENES if c in selected)
-                if t.effects is not None:t.effects.set_categories(self.effect_categories)
+                self.effect_categories=categories
+                if t.effects is not None:t.effects.set_categories(categories)
             return self.state()
         if op in ('effects','engineBed'):
             enabled=bool(msg['enabled'])
             effects=t.effects
-            if enabled and effects is None:
-                effects=CockpitEffects(self.effects_dir)
-                effects.set_categories(self.effect_categories)
+            if enabled:
+                if effects is None:
+                    effects=CockpitEffects()
+                    effects.set_categories(self.effect_categories)
+                self.prepare_effects(effects,self.effect_categories if op=='effects' else (),op=='engineBed')
             with self.lock:
                 if effects is not None:
                     t.effects=effects
@@ -204,12 +246,25 @@ class Player:
                 t.select(t.song,arrangement=plan)
                 t.playing=was_playing
                 self.output.flush.set();self.spectrum.reset()
+            elif op=='cyclePlayMode':
+                modes=('ordered','shuffle','repeatOne')
+                t.play_mode=modes[(modes.index(t.play_mode)+1)%len(modes)]
+                if t.play_mode=='repeatOne' and t.finished and self.autoplay and self.ready and not self.error:
+                    t.restart()
+                    t.playing=True
             elif t.arrangement and op in ('queue','jump','nextSection','loop','restore'):return self.state()
             elif op=='volume':
                 t.master=max(0,min(1,float(msg['value'])))
             elif op=='seVolume':
                 t.se_volume=max(0,min(2,float(msg['value'])))
-            elif op=='play':
+            elif op in ('pause','stop'):
+                self.autoplay=t.playing=False
+                self.output.flush.set()
+                self.spectrum.reset()
+                if op=='stop':t.restart()
+            elif op in ('play','startPlayback'):
+                if op=='startPlayback' and (t.playing or (not self.ready and self.autoplay and not self.error)):
+                    return self.state()
                 if self.error and not self.ready:
                     self.select(t.song['id'],True,t.arrangement or {'id':'free'})
                 elif self.ready:
@@ -264,6 +319,7 @@ if __name__=='__main__':
     base=Path(__file__).resolve().parent.parent
     importer=LibraryImport(base)
     player=None
+    revision=importer.revision
     try:
         for line in sys.stdin:
             try:
@@ -271,11 +327,17 @@ if __name__=='__main__':
                 if request.get('op')=='quit':break
                 op=request.get('op')
                 if op=='importStatus':result=importer.status()
-                elif op=='importStart':result=importer.start(request.get('game',''))
+                elif op=='visualState':result=player.visual_state() if player else {}
+                elif op=='importStart':
+                    result=importer.start(request.get('game',''),request.get('extract',False),request.get('native',False))
                 elif op=='importBrowse':result=choose_folder()
                 else:
-                    if importer.path is None:raise ValueError('请先从本机游戏导入音频。')
-                    if player is None:player=Player(base,importer.path)
+                    if importer.path is None:raise ValueError('请先设置游戏目录。')
+                    if player is None:player=Player(base,importer.path,importer)
+                    elif revision!=importer.revision and not player.ready:
+                        t=player.transport
+                        player.select(t.song['id'],player.autoplay,t.arrangement or {'id':'free'})
+                    revision=importer.revision
                     result=player.dispatch(request)
                 response={'result':result}
             except Exception as exc:response={'error':str(exc)}
