@@ -4,12 +4,23 @@ on:
   push:
     tags:
       - 'v**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (e.g. v0.8.0)
+        type: string
+        required: true
+
+run-name: Release ${{ inputs.tag || github.ref_name }} for Windows
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -20,8 +31,14 @@ jobs:
       RUSTUP_TOOLCHAIN: 1.75.0-x86_64-pc-windows-msvc
       PYTHONUTF8: '1'
     steps:
+      - name: Validate the requested release tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" == v* ]] && git check-ref-format "refs/tags/$RELEASE_TAG"
       - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -53,16 +70,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")
           if [[ $(jq -r '.object.type' <<< "$ref") == tag ]]; then
             sha=$(jq -r '.object.sha' <<< "$ref")
             body=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" | jq -c '.message | rtrimstr("\n")')
             echo "body=$body" >> "$GITHUB_OUTPUT"
           fi
+      - name: Name the Windows download
+        run: mv dist/*.zip "dist/AC8-Music-Player-${RELEASE_TAG//\//-}-Windows-x64.zip"
       - name: Publish the ZIP to the tagged release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           body: ${{ fromJSON(steps.notes.outputs.body || '""') }}
           files: dist/*.zip
           fail_on_unmatched_files: true
