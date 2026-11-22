@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'app'))
-from audio_layout import layout_candidates, layout_name, pcm_format
-from device import open_stream
+from audio_layout import SAMPLE_FORMATS, layout_candidates, layout_name, pcm_format
+from device import encode_output, open_stream
 from spectrum import MixSpectrum
 from surround import BassCrossover, SurroundMix, FULL
 
@@ -35,7 +35,7 @@ bed = np.zeros((12000,3))
 bed[:,1],bed[:,2] = 32000,16000
 crossover = BassCrossover(0xb)
 y = crossover.route(bed)
-assert abs(int(y[-1,2])-16000)<=1 and (y[-1,:2]==0).all() and not y[:,0].any()
+assert abs(y[-1,2]-16000)<.001 and np.max(abs(y[-1,:2]))<1e-7 and not y[:,0].any()
 crossover.reset()
 assert np.array_equal(y,np.concatenate([crossover.route(b) for b in np.array_split(bed,[1,1101,2399,8405])]))
 
@@ -95,8 +95,8 @@ for pcm,objects,accepted,expected in [
     with patch('device.preferred_endpoint',return_value=(7,'test')), patch('device.mix_mask',return_value=pcm), \
          patch('device.spatial_client',return_value=(None,objects)), \
          patch('device.SpatialStream',side_effect=lambda c,m:open_format('Spatial',m)), \
-         patch('device.WasapiStream',side_effect=lambda e,m:open_format('WASAPI',m)), \
-         patch('device.WaveStream',side_effect=lambda mm,d,m:open_format('PCM',m)):
+         patch('device.WasapiStream',side_effect=lambda e,m,f:open_format('WASAPI',m)), \
+         patch('device.WaveStream',side_effect=lambda mm,d,m,f:open_format('PCM',m)):
         stream = open_stream(None)
         assert (stream.kind,stream.mask)==expected
         counts = [mask.bit_count() for _,mask in attempts]
@@ -107,5 +107,27 @@ for pcm,objects,accepted,expected in [
         fmt = getattr(desc,'wave',desc)
         assert fmt.channels==mask.bit_count() and fmt.align==2*fmt.channels
         assert fmt.rate==48000 and fmt.bytesPerSec==48000*fmt.align
+        for name,(code,bits) in SAMPLE_FORMATS.items():
+            desc=pcm_format(mask,name)
+            fmt=getattr(desc,'wave',desc)
+            assert fmt.bits==bits and fmt.align==bits//8*fmt.channels and fmt.bytesPerSec==48000*fmt.align
+            assert (desc.subformat[0] if hasattr(desc,'subformat') else fmt.format)==code
+
+# Negotiation falls back in precision before reducing a device's channel count.
+for allowed,expected in [
+    ({(0x3f,'Float32'),(0x3f,'PCM32')},(0x3f,'Float32')),
+    ({(0x3f,'PCM24'),(0x3f,'PCM16'),(3,'Float32')},(0x3f,'PCM24')),
+]:
+    def open_pcm(endpoint,mask,fmt):
+        if (mask,fmt) not in allowed:raise OSError('unavailable')
+        return mask,fmt
+    with patch('device.preferred_endpoint',return_value=(1,'test')),patch('device.mix_mask',return_value=0x3f), \
+         patch('device.WasapiStream',side_effect=open_pcm),patch('device.WaveStream',side_effect=OSError()):
+        assert open_stream(None,allow_spatial=False)==expected
+samples=np.array([[-1.,1.],[2**-22,-2**-22]],np.float32)
+assert encode_output(samples,'Float32') is samples
+assert encode_output(samples,'PCM32').tolist()==[[-2**31,2**31-1],[512,-512]]
+assert encode_output(samples,'PCM24').tobytes()==bytes.fromhex('000080 ffff7f 020000 feffff')
+assert encode_output(samples,'PCM16').tolist()==[[-32768,32767],[0,0]]
 assert layout_name(FULL)=='7.1.4' and layout_name(0x33)=='4.0'
 print('Passed crossover, channel routing, flyby trajectory, chunk continuity, spectrum and layout negotiation.')

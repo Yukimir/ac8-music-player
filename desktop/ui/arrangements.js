@@ -22,7 +22,7 @@
   const labelOf = part => [part.label,part.name].filter(Boolean).join(' · ');
   const key = song => 'ac8.arrangements.v1.'+song.id;
   const copies = new Map(), drafts = new Map();
-  let song=null, selected='', apply=null, pending=false;
+  let song=null, selected='', apply=null, changed=null, addToPlaylist=null, pending=false;
   const clone = value => JSON.parse(JSON.stringify(value));
   const sources={
     playlist:'顺序来自游戏音库内的播放列表。',
@@ -91,9 +91,10 @@
     if (id==='free') return {id:'free'};
     return store(s).items.find(p=>p.id===id) || s.defaultPlan;
   }
-  function saved(s) {
+  function plans(s) {return s?.defaultPlan?[s.defaultPlan,...store(s).items]:[];}
+  function saved(s,preferredId) {
     if (!s?.defaultPlan) return undefined;
-    return planFor(s,store(s).last);
+    return planFor(s,typeof preferredId==='string'?preferredId:store(s).last);
   }
   function startStep(part) {
     return {segment:part.id,repeat:1,lanes:part.lanes.filter(l=>l.on).map(l=>l.key),changes:[]};
@@ -130,6 +131,7 @@
       }
       pending=false;
       if (song===s) drawList();
+      if (accepted) changed?.(s);
     }
   }
   async function save() {
@@ -148,7 +150,7 @@
   function drawList() {
     const data=store(song), list=$('arrList'), preview=$('arrPreview');
     list.replaceChildren();preview.replaceChildren();
-    for (const p of [planFor(song,'free'),song.defaultPlan,...data.items]) {
+    for (const p of [planFor(song,'free'),...plans(song)]) {
       const row=button('',async()=>{
         if (p.id===selected || pending) return;
         notice('');await activate(song,p,data);
@@ -178,7 +180,7 @@
     details.append(summary,order);
     if (p.source) details.append(node('p',sources[p.source]));
     if (p.stopEvents?.length) details.append(node('p','游戏收尾事件　'+p.stopEvents.join('、')));
-    actions.append(button('复制',()=>edit(p,true)));
+    actions.append(button('加入播放列表',()=>addToPlaylist(song,p.id)),button('复制',()=>edit(p,true)));
     if (p.id!=='default') {
       actions.append(button('编辑',()=>edit(p)),button('删除',()=>{
         const s=song;
@@ -276,7 +278,9 @@
     }));host.append(actions);
   }
   window.Arrangements={
-    saved, connect(cb){apply=cb;$('arrNew').onclick=()=>edit(null);},
+    saved, plans, connect(cb,onChange,onAdd){
+      apply=cb;changed=onChange;addToPlaylist=onAdd;$('arrNew').onclick=()=>edit(null);
+    },
     show(s,state) {
       const panel=$('arrangements');panel.hidden=!s.defaultPlan;
       if (panel.hidden) {song=null;return;}

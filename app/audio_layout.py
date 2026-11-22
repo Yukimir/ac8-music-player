@@ -26,12 +26,17 @@ class ExtensibleFormat(C.Structure):
     _fields_ = [('wave', WaveFormat), ('validBits', W.WORD), ('mask', W.DWORD), ('subformat', Guid)]
 
 
-def pcm_format(mask):
+SAMPLE_FORMATS = {'Float32':(3,32),'PCM32':(1,32),'PCM24':(1,24),'PCM16':(1,16)}
+
+
+def pcm_format(mask, sample_format='PCM16'):
     channels = mask.bit_count()
+    code,bits=SAMPLE_FORMATS[sample_format]
+    align=channels*(bits//8)
     if mask == STEREO:
-        return WaveFormat(1, 2, 48000, 192000, 4, 16, 0)
-    wave = WaveFormat(WAVE_FORMAT_EXTENSIBLE, channels, 48000, 96000*channels, 2*channels, 16, 22)
-    return ExtensibleFormat(wave, 16, mask, guid('00000001-0000-0010-8000-00aa00389b71'))
+        return WaveFormat(code,channels,48000,48000*align,align,bits,0)
+    wave = WaveFormat(WAVE_FORMAT_EXTENSIBLE,channels,48000,48000*align,align,bits,22)
+    return ExtensibleFormat(wave,bits,mask,guid(f'{code:08x}-0000-0010-8000-00aa00389b71'))
 
 
 def layout_candidates(mask):

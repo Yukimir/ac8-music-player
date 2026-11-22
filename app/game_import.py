@@ -110,8 +110,8 @@ class LibraryImport:
     def __init__(self,base,cache_root=None):
         self.base=base
         raw=(base/'library/import.json').read_bytes()
-        self.version=hashlib.sha256(raw).hexdigest()
         self.spec=json.loads(raw)
+        self.version=self.spec.get('cacheVersion') or hashlib.sha256(raw).hexdigest()
         self.native=json.loads((base/'library/native.json').read_bytes())
         self.archives={entry['pak'] for entry in self.spec['music'].values()}
         self.cache=(cache_root or base/'audio')/self.version[:16]

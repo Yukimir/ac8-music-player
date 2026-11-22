@@ -279,7 +279,7 @@ class Player:
             mask=(points>=c['at']) & (points<c['end'])
             ix=(points[mask]-c['at']+c['offset'])%len(audio)
             vals[mask]=np.maximum(vals[mask],np.max(np.abs(audio[ix].astype(np.float32)),axis=1))
-        peaks=np.sqrt(np.max(vals.reshape(bins,64),axis=1)/32768)
+        peaks=np.sqrt(np.minimum(1,np.max(vals.reshape(bins,64),axis=1)))
         self.peak_cache[sig]=peaks
         return peaks
 

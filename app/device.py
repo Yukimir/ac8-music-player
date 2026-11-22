@@ -3,11 +3,25 @@ import ctypes as C
 from ctypes import wintypes as W
 from contextlib import ExitStack
 import threading
+import numpy as np
 
-from audio_layout import (STEREO, WAVE_MAPPER, Guid, check_hresult, com_method, endpoint_client, guid,
+from audio_layout import (STEREO, WAVE_MAPPER, SAMPLE_FORMATS, Guid, check_hresult, com_method, endpoint_client, guid,
                           layout_candidates, layout_name, mix_mask, pcm_format, preferred_endpoint)
 from spatial_output import SpatialStream, spatial_client
 from surround import SurroundMix
+
+
+def encode_output(samples,sample_format):
+    """Convert normalized Float32 to the successfully opened stream's sample format."""
+    if sample_format=='Float32':return samples
+    _,bits=SAMPLE_FORMATS[sample_format]
+    scale=1<<(bits-1)
+    # Float32 cannot represent INT32_MAX at positive full scale.
+    values=np.clip(np.rint(samples.astype(np.float64)*scale),-scale,scale-1)
+    if bits==16:return values.astype('<i2')
+    words=values.astype('<i4')
+    if bits==32:return words
+    return words.view(np.uint8).reshape(*samples.shape,4)[:,:,:3].copy()
 
 
 class WaveHeader(C.Structure):
@@ -19,15 +33,18 @@ class WaveStream:
     backend = 'PCM'
     frames = 960
 
-    def __init__(self, mm, device, mask):
+    def __init__(self, mm, device, mask, sample_format='PCM16'):
         self.mm, self.mask = mm, mask
+        self.sample_format = sample_format
         self.handle = W.HANDLE()
         self.prepared = []
         self.index = 0
-        fmt = pcm_format(mask)
+        fmt = pcm_format(mask,sample_format)
+        wave = getattr(fmt,'wave',fmt)
+        self.rate = wave.rate
         self.check(mm.waveOutOpen(C.byref(self.handle),device,C.byref(fmt),0,0,0))
         try:
-            self.buffers = [C.create_string_buffer(self.frames*mask.bit_count()*2) for _ in range(4)]
+            self.buffers = [C.create_string_buffer(self.frames*wave.align) for _ in range(4)]
             for buf in self.buffers:
                 h = WaveHeader(C.addressof(buf),len(buf))
                 self.check(mm.waveOutPrepareHeader(self.handle,C.byref(h),C.sizeof(h)))
@@ -62,12 +79,15 @@ class WaveStream:
 
 
 class WasapiStream:
-    """Shared PCM for endpoints whose legacy WinMM path rejects their full layout."""
+    """Submit PCM directly to the Windows shared audio engine."""
     backend = 'WASAPI PCM'
 
-    def __init__(self,endpoint,mask):
+    def __init__(self,endpoint,mask,sample_format='Float32'):
         self.mask = mask
-        fmt = pcm_format(mask)
+        self.sample_format = sample_format
+        fmt = pcm_format(mask,sample_format)
+        wave = getattr(fmt,'wave',fmt)
+        self.rate,self.align = wave.rate,wave.align
         ptr = C.c_void_p
         with ExitStack() as cleanup:
             client = endpoint_client(endpoint,'1cb9ad4c-dbfa-4c32-b178-c2f568a703b2',cleanup)
@@ -98,6 +118,7 @@ class WasapiStream:
         return frames if free>=frames else 0
 
     def write(self,block):
+        if block.nbytes!=len(block)*self.align:raise ValueError('音频块与 WASAPI 格式不匹配')
         memory = C.c_void_p()
         check_hresult(self.get_buffer(self.render,len(block),C.byref(memory)))
         C.memmove(memory,block.ctypes.data,block.nbytes)
@@ -120,21 +141,23 @@ def open_stream(mm, allow_spatial=True):
     with ExitStack() as cleanup:
         try:pcm = mix_mask(endpoint) if endpoint else STEREO
         except OSError:pcm = STEREO
-        candidates = [(mask,False) for mask in layout_candidates(pcm)]
+        candidates = []
+        for mask in layout_candidates(pcm):
+            for fmt in SAMPLE_FORMATS:
+                if endpoint:candidates.append((mask,'wasapi',fmt))
+                candidates.append((mask,'wave',fmt))
         if allow_spatial and endpoint:
             try:
                 client,native = spatial_client(endpoint,cleanup)
-                candidates.extend((mask,True) for mask in layout_candidates(native) if mask.bit_count()>2)
+                candidates.extend((mask,'spatial','Float32') for mask in layout_candidates(native) if mask.bit_count()>2)
             except OSError:pass
-        # Stable sort resolves ties in favor of direct PCM on the same device.
-        candidates.sort(key=lambda item:item[0].bit_count(),reverse=True)
-        for mask,spatial in candidates:
+        # Keep the largest layout, then the highest precision. Prefer direct PCM on a tie.
+        formats=list(SAMPLE_FORMATS)
+        candidates.sort(key=lambda item:(-item[0].bit_count(),formats.index(item[2])))
+        for mask,backend,fmt in candidates:
             try:
-                if not spatial:
-                    try:return WaveStream(mm,device,mask)
-                    except OSError:
-                        if endpoint:return WasapiStream(endpoint,mask)
-                        continue
+                if backend=='wasapi':return WasapiStream(endpoint,mask,fmt)
+                if backend=='wave':return WaveStream(mm,device,mask,fmt)
                 stream = SpatialStream(client,mask)
                 stream.endpoint_scope = cleanup.pop_all()
                 return stream
@@ -153,6 +176,8 @@ class Output:
         self.on_block = on_block
         self.layout = ''
         self.backend = ''
+        self.rate = None
+        self.sample_format = ''
         self.thread = threading.Thread(target=self._run,daemon=True)
         self.thread.start()
 
@@ -180,6 +205,7 @@ class Output:
                         mixer = SurroundMix(stream.mask) if stream.mask != STEREO else None
                         with self.lock:
                             self.layout,self.backend = layout_name(stream.mask),stream.backend
+                            self.rate,self.sample_format = stream.rate,stream.sample_format
                     frames = stream.available()
                     if not frames:
                         self.stop.wait(.001)
@@ -190,13 +216,11 @@ class Output:
                             stream.close()
                             stream = None
                             continue
-                        if mixer:
-                            block = self.player.render(frames,spatial=mixer)
-                            monitor = mixer.monitor
-                        else:
-                            block = monitor = self.player.render(frames)
-                        if self.on_block:self.on_block(monitor)
-                    stream.write(block)
+                        block = self.player.render(frames,spatial=mixer,floating=True)
+                        if self.on_block:
+                            monitor = mixer.monitor if mixer else block*32768.
+                            self.on_block(monitor)
+                    stream.write(encode_output(block,stream.sample_format))
                 except OSError as exc:
                     was_spatial = isinstance(stream,SpatialStream)
                     if stream:stream.close()

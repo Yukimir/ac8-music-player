@@ -24,6 +24,8 @@ MIXES = {
     'engine_recovery': [(728417227,.65,0),(478832551,.53,.10)],
     'missile_pass1': [(735107832,1,0)], 'missile_pass2': [(512147323,1,0)],
     'missile_hit': [(569074443,.85,0),(756399073,.64,0),(176293869,.30,0)],
+    # Two stereo variations in ThunderCloud_Inside_Ambience's quieter layer.
+    'cloud_inside1': [(706171595,1,0)], 'cloud_inside2': [(219973025,1,0)],
 }
 LIMITS = dict(engine_surge=2.25,engine_recovery=2.9,missile_pass1=4.85,missile_pass2=6.38,missile_hit=6.15)
 ENGINES = dict(engine_low=844099875,engine_cruise=542918694,engine_high=522259649)

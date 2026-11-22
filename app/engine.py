@@ -23,6 +23,7 @@ class Media:
         self.library = library or root/'library'
         self.temp = tempfile.TemporaryDirectory(prefix="AC8-audio-")
         self.files = {}
+        self.sample_rate = None
 
     def load(self, ids, progress=lambda *args: None, cancelled=lambda: False):
         keep = set(ids)
@@ -38,7 +39,7 @@ class Media:
             source = (self.resolver.music(key,path.parent) if self.resolver else
                       nullcontext(self.library/'wem'/(key+'.wem')))
             with source as wem:
-                proc = subprocess.run([self.root/'decoder/vgmstream-cli.exe','-i','-o',path,wem],
+                proc = subprocess.run([self.root/'decoder/vgmstream-cli.exe','-i','-W','4','-o',path,wem],
                                       capture_output=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             if proc.returncode or not path.exists():
                 raise ValueError(f"无法解码音频 {key}")
@@ -54,17 +55,20 @@ class Media:
                     if tag == b'fmt ':
                         fmt = f.read(size)
                         codec, channels, rate = struct.unpack_from('<HHI',fmt)
-                        if codec==0xfffe and len(fmt)>=40 and fmt[24:40]==bytes.fromhex('0100000000001000800000aa00389b71'):
+                        if codec==0xfffe and len(fmt)>=40 and fmt[24:40]==bytes.fromhex('0300000000001000800000aa00389b71'):
                             if channels==12 and struct.unpack_from('<I',fmt,20)[0]!=FULL:
                                 raise ValueError('原生素材的声道位置不匹配')
-                            codec=1
+                            codec=3
                         expected=(12,) if key.startswith('native-') else (1,2)
-                        if codec!=1 or rate!=RATE or channels not in expected or struct.unpack_from('<H',fmt,14)[0]!=16:
+                        if codec!=3 or rate!=RATE or channels not in expected or struct.unpack_from('<H',fmt,14)[0]!=32:
                             raise ValueError("不支持的解码格式")
                     else: f.seek(size,1)
                     if size%2: f.seek(1,1)
                 off = f.tell()
-            self.files[key] = np.memmap(path, dtype='<i2', mode='r', offset=off, shape=(size//(2*channels),channels))
+                if not channels or not size or size%(4*channels) or off+size>path.stat().st_size:
+                    raise ValueError(f"音频 {key} 的采样数据不完整")
+            self.files[key]=np.memmap(path,dtype='<f4',mode='r',offset=off,shape=(size//(4*channels),channels))
+            self.sample_rate=rate
         return True
 
     def close(self):
@@ -381,7 +385,8 @@ class Transport:
                 ix=clip['offset']+lo-clip['at'];size=hi-lo
                 if 0<=ix and ix+size<=len(raw): arr=raw[ix:ix+size]
                 else: arr=raw[np.arange(ix,ix+size)%len(raw)]
-                g=gain
+                # Float WAV samples use +/-1 full scale. The mixer and cockpit use PCM16 units.
+                g=gain*32768 if raw.dtype.kind=='f' else gain
                 if clip['env']:
                     times=np.arange(lo-clip['at'],hi-clip['at'])
                     for points in clip['env']:g=g*envelope(points,times)
@@ -401,7 +406,7 @@ class Transport:
         out[a-self.clock:b-self.clock]+=block
         if bed is not None:native[a-self.clock:b-self.clock]+=bed
 
-    def render(self,n,spatial=None):
+    def render(self,n,spatial=None,*,floating=False):
         mixed=np.zeros((n,2),np.float32);written=0
         native=np.zeros((n,12),np.float32) if self.has_native else None
         while written<n and self.playing:
@@ -435,12 +440,17 @@ class Transport:
             if not v.get('bridge'):
                 if v.get('fromQueue'):self.section_queue.popleft()
                 self.plan()
+        if self.effects is not None:
+            self.effects.filter_music(mixed[:written],None if native is None else native[:written])
         if spatial is not None:
             spatial.begin(mixed)
             if self.effects is not None:
                 self.effects.mix(mixed[:written],self.se_volume,None if spatial.front_only else spatial)
-            return spatial.finish(mixed,self.master,native) if native is not None else spatial.finish(mixed,self.master)
-        if self.effects is not None:self.effects.mix(mixed[:written], self.se_volume)
-        if native is not None:mixed+=native @ native_matrix(3)
-        return np.clip(mixed*self.master,-32768,32767).astype('<i2')
+            result=spatial.finish(mixed,self.master,native)
+        else:
+            if self.effects is not None:self.effects.mix(mixed[:written], self.se_volume)
+            if native is not None:mixed+=native @ native_matrix(3)
+            result=mixed*self.master
+        if floating:return np.clip(result*(1/32768),-1.,1.)
+        return np.clip(result,-32768,32767).astype('<i2')
 

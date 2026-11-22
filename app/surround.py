@@ -57,7 +57,7 @@ class BassCrossover:
         self.state = [(0., 0., 0., 0.)] * self.channels
 
     def route(self, bed, native=None):
-        output = np.empty(bed.shape, dtype='<i2')
+        output = np.empty(bed.shape, dtype=np.float32)
         a1, a2 = self.feedback
         for ch in range(self.channels):
             b0, b1, b2 = self.low if ch == self.sub else self.high
@@ -71,7 +71,7 @@ class BassCrossover:
                 result.append(y)
             self.state[ch] = (z1,z2,z3,z4)
             if native is not None:result=np.asarray(result)+native[:,ch]
-            output[:,ch] = np.clip(np.rint(result),-32768,32767)
+            output[:,ch] = result
         return output
 
 
@@ -118,6 +118,7 @@ class SurroundMix:
                      for j,(bit,i) in enumerate(ambience)]
         self.delay = np.zeros(max((d for _,d,_ in self.taps),default=0),np.float32)
         self.engine_gains = np.stack([self.pan(-130,8), self.pan(130,8)])
+        self.cloud_gains = np.stack([self.pan(-65,18),self.pan(65,18)])
         self.flybys = {s:[self.pan(145*s,0),self.pan(90*s,50),self.pan(-25*s,0)] for s in (-1,1)}
         self.reset()
 
@@ -155,8 +156,11 @@ class SurroundMix:
 
     def add_cue(self, cue, offset, pos, data, duration):
         name = cue.clip
-        mono = data.mean(axis=1,keepdims=True)
         target = self.bed[offset:offset+len(data)]
+        if name.startswith('cloud_inside'):
+            target += data @ self.cloud_gains
+            return
+        mono = data.mean(axis=1,keepdims=True)
         if name.startswith('missile_pass'):
             sign = -1 if name.endswith('1') else 1
             rear, overhead, front = self.flybys[sign]
@@ -185,11 +189,11 @@ class SurroundMix:
 
     def finish(self, stereo, master, native=None):
         monitor=stereo if native is None else stereo+native @ native_matrix(STEREO)
-        self.monitor = np.clip(monitor*master,-32768,32767).astype('<i2')
+        self.monitor = monitor*master
         if native is not None and self.mask!=FULL:native=native @ native_matrix(self.mask)
         if self.front_only:self.bed[:,:2] = stereo
         if self.crossover:
             self.bed[:,self.crossover.sub] = stereo.mean(axis=1)
             return self.crossover.route(self.bed*master,None if native is None else native*master)
         if native is not None:self.bed+=native
-        return np.clip(self.bed*master,-32768,32767).astype('<i2')
+        return self.bed*master

@@ -93,6 +93,12 @@ kbd{border:1px solid #cce4f49c;border-radius:2px;padding:0 4px;display:inline-bl
 .playing .song.current .mark i:nth-child(2){animation-delay:-.25s}
 .playing .song.current .mark i:nth-child(3){animation-delay:-.45s}
 #empty{color:var(--soft);margin:12px;font-size:13px}
+.list-actions{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin:9px 4px 0 8px}
+.list-actions button,.list-actions select{padding:4px 8px;border:1px solid var(--line);font-size:12px;background:#071d30;color:var(--white)}
+.list-actions .primary{background:#d8efff;color:#132a42}
+.list-actions select{max-width:100%;min-width:0}
+#listNotice{margin:5px 12px 0;font-size:12px;color:var(--cyan)}
+#listNotice:empty{display:none}
 #right{min-height:0;overflow:auto;padding:0 6px 10px 0;scrollbar-width:thin;scrollbar-color:#85a5c35c transparent}
 #now{padding:1px 2px 9px}
 .headings{padding-top:3px;min-width:0}
@@ -108,9 +114,13 @@ h2{display:inline;font-size:clamp(24px,2.5vw,40px);line-height:1.16;letter-spaci
 .transport{display:flex;align-items:center;gap:6px;margin:10px 2px 0;min-height:32px}
 .primary,.icon,.order,#nextPhase,#reset{transition:background .15s,color .15s,border-color .15s}
 .primary{font-weight:650;font-size:13px;padding:5px 15px;color:#132a42;background:#e6f4ff;box-shadow:0 0 11px #96ccff24;min-width:78px}
-#playIcon{display:inline-block;margin-right:7px;font-size:11px}
+.transport .primary,.transport .icon{display:inline-flex;align-items:center;justify-content:center;min-height:29px}
+.transport .primary{gap:7px}
+.transport svg{display:block;width:17px;height:17px;fill:currentColor;flex:none}
+#play .pause-mark,#play.can-pause .play-mark{display:none}
+#play.can-pause .pause-mark{display:inline}
 .icon,.order{border:1px solid var(--line);background:#03172a99;color:#d7e9f7;font-size:12px;padding:5px 9px;min-height:29px}
-.icon{font-size:15px;padding:2px 7px}
+.icon{width:34px;padding:2px 7px}
 button:hover{color:var(--cyan)}
 .primary:hover{color:#123d5e;background:white}
 .icon:hover,.order:hover,#nextPhase:hover,#reset:hover{background:#25466288}

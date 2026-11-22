@@ -13,6 +13,7 @@ parser.add_argument('--game',required=True,help='ACE COMBAT 8 installation')
 args=parser.parse_args()
 sys.path.insert(0,str(args.player/'app'))
 from bridge import add_native_media
+from cockpit import CLOUD_CLIPS, CockpitEffects
 from engine import Media,Transport
 from game_import import LibraryImport
 from surround import FULL,SurroundMix
@@ -34,20 +35,33 @@ with tempfile.TemporaryDirectory() as tmp:
         transport.audio=media.files
         transport.master=1
         transport.playing=True
-        assert np.array_equal(transport.render(48000,SurroundMix(FULL)),media.files[key][:48000])
+        original=media.files[key][:48000]
+        assert original.dtype==np.float32 and media.sample_rate==48000
+        assert np.any(original*32768!=np.rint(original*32768))
+        assert np.array_equal(transport.render(48000,SurroundMix(FULL),floating=True),np.clip(original,-1,1))
     finally:media.close()
+    effects=CockpitEffects()
+    with library.cockpit() as fetch:effects.prepare(fetch,('cloud',))
+    for name in CLOUD_CLIPS:
+        assert effects.samples[name].shape[1]==2 and len(effects.samples[name])>8*48000
     assert not library.cache.exists()
     # Simulate a portable copy with just one extracted WEM, then disconnect the game.
     normal=next(iter(library.spec['music']))
     dest=library.cache/'wem'/(normal+'.wem')
     dest.parent.mkdir(parents=True)
     with library.music(normal,root) as direct:dest.write_bytes(direct.read_bytes())
+    cloud_dir=library.cache/'cockpit'
+    cloud_dir.mkdir()
+    with library.cockpit() as fetch:
+        for name in CLOUD_CLIPS:(cloud_dir/(name+'.wav')).write_bytes(fetch(name).read_bytes())
     assert library.start('')['phase']=='ready'
     offline=LibraryImport(args.player,root/'audio')
     with offline.music(normal,root) as stored:assert stored==dest
+    with offline.cockpit() as fetch:
+        for name in CLOUD_CLIPS:assert fetch(name)==cloud_dir/(name+'.wav')
     try:
         with offline.music(key,root):raise AssertionError('unavailable native asset accepted')
     except ValueError as exc:assert key.removeprefix('native-') in str(exc)
     assert not offline.config['native'] and offline.source is None
     offline.close();library.close()
-print('Passed direct native PCM identity, portable settings and partial offline cache fallback.')
+print('Passed direct native PCM identity, both cloud recordings and offline cache fallback.')

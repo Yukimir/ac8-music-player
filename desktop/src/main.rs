@@ -104,6 +104,27 @@ fn show_player(app: &AppHandle) {
 }
 
 #[tauri::command]
+fn tray_tracks(
+    app: AppHandle,
+    previous: Option<String>,
+    following: Option<String>,
+) -> Result<(), String> {
+    let tray = app.tray_handle();
+    for (id, label, track) in [
+        ("previous", "上一首", previous),
+        ("following", "下一首", following),
+    ] {
+        let item = tray.get_item(id);
+        let title = track.as_deref().unwrap_or("无").replace('&', "&&");
+        item.set_title(&format!("{label}　{title}"))
+            .map_err(|e| e.to_string())?;
+        item.set_enabled(track.is_some())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn player_window(app: AppHandle, action: &str) -> Result<(), String> {
     match action {
         "hide" => app
@@ -144,6 +165,9 @@ fn main() {
         .add_item(CustomMenuItem::new("pause", "暂停"))
         .add_item(CustomMenuItem::new("stop", "停止"))
         .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("previous", "上一首　无").disabled())
+        .add_item(CustomMenuItem::new("following", "下一首　无").disabled())
+        .add_native_item(SystemTrayMenuItem::Separator)
         .add_item(CustomMenuItem::new("exit", "退出"));
     tauri::Builder::default()
         .system_tray(
@@ -155,7 +179,7 @@ fn main() {
             SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
                 "show" => show_player(app),
                 "exit" => quit(app),
-                "play" | "pause" | "stop" => {
+                "play" | "pause" | "stop" | "previous" | "following" => {
                     if let Some(main) = app.get_window("main") {
                         let op = if id == "play" {
                             "startPlayback"
@@ -193,6 +217,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             audio,
             player_window,
+            tray_tracks,
             wallpaper::set_wallpaper,
             wallpaper::desktop_active,
             wallpaper::fit_wallpaper

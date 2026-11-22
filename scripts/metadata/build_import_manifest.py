@@ -58,5 +58,12 @@ with (work/'meta/4727.bnk').open('rb') as f:
 assert len(effects)==len(SOURCE_IDS)
 cues={k:(args.reference_library/'cockpit'/(k+'.wav')).stat().st_size for k in sorted(MIXES.keys()|ENGINES.keys())}
 manifest=dict(build=args.build,recipe=1,music=music,effects=effects,cues=cues)
-(lib/'import.json').write_text(json.dumps(manifest,separators=(',',':'),sort_keys=True),encoding='utf8')
+path=lib/'import.json'
+if path.is_file():
+    raw=path.read_bytes()
+    old=json.loads(raw)
+    if (all(old.get(key)==manifest[key] for key in ('build','recipe')) and
+        all(all(manifest[group].get(k)==v for k,v in old[group].items()) for group in ('music','effects','cues'))):
+        manifest['cacheVersion']=old.get('cacheVersion',hashlib.sha256(raw).hexdigest())
+path.write_text(json.dumps(manifest,separators=(',',':'),sort_keys=True),encoding='utf8')
 print('music',len(music),'effect sources',len(effects),'rendered cues',len(cues))

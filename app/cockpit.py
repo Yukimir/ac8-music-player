@@ -18,6 +18,31 @@ class Cue:
     gain: float
     fade: int
     distance: float = 0.  # Relative near (0) to far (1), chosen once per explosion.
+    cut_at: int | None = None
+
+
+CLOUD_CLIPS = ('cloud_inside1','cloud_inside2')
+CLOUD_ATTACK = round(.65*RATE)
+CLOUD_RELEASE = RATE
+CLOUD_CANCEL = round(.22*RATE)
+# A truncated one-pole response keeps the bass and softens the upper mids.
+CLOUD_KERNEL = np.exp(-2*np.pi*1250/RATE*np.arange(64)).astype(np.float32)
+CLOUD_KERNEL /= CLOUD_KERNEL.sum()
+
+
+def cloud_depth(cue,lo,hi):
+    frames=np.arange(hi-lo,dtype=np.float32)
+    enter=np.clip((lo-cue.start+frames)/CLOUD_ATTACK,0,1)
+    leave=np.clip((cue.stop-1-lo-frames)/CLOUD_RELEASE,0,1)
+    depth=enter*enter*(3-2*enter)*leave*leave*(3-2*leave)
+    if cue.cut_at is not None:
+        tail=np.clip((cue.cut_at+CLOUD_CANCEL-1-lo-frames)/CLOUD_CANCEL,0,1)
+        depth*=tail*tail*(3-2*tail)
+    return depth[:,None]
+
+
+def cue_end(cue):
+    return cue.stop if cue.cut_at is None else min(cue.stop,cue.cut_at+CLOUD_CANCEL)
 
 
 def explosion_profiles(source):
@@ -182,17 +207,18 @@ class EngineBed:
 
 
 class CockpitEffects:
-    SCENES = ('missile', 'railgun', 'pull_up', 'stall', 'launch', 'gun')
+    SCENES = ('missile', 'railgun', 'pull_up', 'stall', 'launch', 'gun', 'cloud')
     CLIPS = ('missile_voice', 'caution', 'danger', 'rail_voice', 'rail_tone',
              'pull_voice', 'pull_tone', 'stall_voice', 'launch1', 'launch2',
              'gun_start', 'gun_body', 'gun_tail', 'boom1', 'boom2', 'missile_hit',
-             'missile_pass1', 'missile_pass2', 'engine_surge', 'engine_recovery')
+             'missile_pass1', 'missile_pass2', 'engine_surge', 'engine_recovery', *CLOUD_CLIPS)
 
     SCENE_CLIPS = {
         'missile': ('missile_voice','caution','danger','missile_pass1','missile_pass2'),
         'railgun': ('rail_voice','rail_tone','boom1','boom2'),
         'pull_up': ('pull_voice','pull_tone'), 'stall': ('stall_voice',),
         'launch': ('launch1','launch2','missile_hit'), 'gun': ('gun_start','gun_body','gun_tail'),
+        'cloud': CLOUD_CLIPS,
     }
     ENGINE_LAYERS = ('engine_low','engine_cruise','engine_high')
 
@@ -231,11 +257,19 @@ class CockpitEffects:
         self.accents = deque()
         self.bag = []
         self.previous = None
+        self.cloud_start = None
+        self.cloud_history = {}
 
     def set_enabled(self, enabled):
-        if enabled != self.enabled:
-            self.enabled = enabled
-            self.reset()
+        if enabled == self.enabled:return
+        self.enabled = enabled
+        self.upcoming.clear();self.accents.clear();self.bag.clear()
+        self.previous=None
+        if enabled:
+            self.next_scene=self.clock+round(RATE*self.rng.uniform(.6,1.4))
+        else:
+            self.active=[replace(c,cut_at=self.clock) if c.cut_at is None else c
+                         for c in self.active if c.clip in CLOUD_CLIPS]
 
     def set_categories(self, categories):
         if categories == self.categories:
@@ -248,7 +282,10 @@ class CockpitEffects:
             self.accents.clear()
             fade = round(.045*RATE)
             stop = self.clock + fade
-            self.active = [replace(c, stop=stop, fade=fade) if c.stop>stop else c for c in self.active]
+            for i,c in enumerate(self.active):
+                if c.clip in CLOUD_CLIPS:
+                    if c.cut_at is None:self.active[i]=replace(c,cut_at=self.clock)
+                elif c.stop>stop:self.active[i]=replace(c,stop=stop,fade=fade)
             self.previous = None
         if was_empty or self.previous is None:
             self.next_scene = self.clock + round(RATE*self.rng.uniform(.6,1.4))
@@ -327,6 +364,8 @@ class CockpitEffects:
             emit('gun_start', 0, .36, length)
             emit('gun_body', .05, .32, length - .05, fade=.035)
             emit('gun_tail', length, .38)
+        elif kind == 'cloud':
+            emit(rng.choice(CLOUD_CLIPS),0,.31,rng.uniform(4.8,8.2),fade=0)
         return sorted(result, key=lambda cue: cue.start)
 
     def schedule(self):
@@ -337,17 +376,47 @@ class CockpitEffects:
                 self.bag[0], self.bag[-1] = self.bag[-1], self.bag[0]
         self.previous = self.bag.pop()
         cues = self.make_scene(self.previous, self.next_scene)
+        self.next_scene = max(cue.stop for cue in cues) + round(self.rng.uniform(6, 15) * RATE)
+        # Preserve the slot's duration so the other effects keep their original cadence.
+        if self.previous == 'cloud' and self.rng.randrange(3) != 0:
+            return
         self.upcoming.extend(cues)
         accent = engine_accent(self.previous, cues)
         if accent is not None:
             self.accents.append(accent)
-        self.next_scene = max(cue.stop for cue in cues) + round(self.rng.uniform(6, 15) * RATE)
 
-    def mix(self, output, gain=1., spatial=None):
-        end = self.clock + len(output)
+    def begin_block(self, size):
+        end = self.clock + size
         if self.enabled:
             while self.categories and self.next_scene < end:
                 self.schedule()
+        while self.upcoming and self.upcoming[0].start < end:
+            self.active.append(self.upcoming.popleft())
+        return end
+
+    def filter_music(self,stereo,native=None):
+        end=self.begin_block(len(stereo))
+        for cue in self.active:
+            if cue.clip not in CLOUD_CLIPS:continue
+            lo,hi=max(self.clock,cue.start),min(end,cue_end(cue))
+            if lo>=hi:continue
+            if self.cloud_start!=cue.start:
+                self.cloud_start=cue.start
+                self.cloud_history.clear()
+            wet=.92*cloud_depth(cue,lo,hi)
+            for key,bank in (('stereo',stereo),('native',native)):
+                if bank is None:continue
+                block=bank[lo-self.clock:hi-self.clock]
+                history=self.cloud_history.get(key)
+                if history is None:history=np.repeat(block[:1],len(CLOUD_KERNEL)-1,axis=0)
+                extended=np.concatenate((history,block))
+                self.cloud_history[key]=extended[1-len(CLOUD_KERNEL):].copy()
+                for ch in range(block.shape[1]):
+                    low=np.convolve(extended[:,ch],CLOUD_KERNEL,'valid')
+                    block[:,ch]+=wet[:,0]*(.96*low-block[:,ch])
+
+    def mix(self, output, gain=1., spatial=None):
+        end = self.begin_block(len(output))
         if spatial is None:
             engine_output = output
         else:
@@ -356,14 +425,12 @@ class CockpitEffects:
         if spatial is not None:
             output += engine_output
             spatial.add_engine(engine_output)
-        if not self.enabled or not len(output):
+        if not len(output) or (not self.enabled and not self.active):
             return
         while self.accents and self.accents[0].end <= end:
             self.accents.popleft()
-        while self.upcoming and self.upcoming[0].start < end:
-            self.active.append(self.upcoming.popleft())
         for cue in self.active:
-            lo, hi = max(self.clock, cue.start), min(end, cue.stop)
+            lo, hi = max(self.clock, cue.start), min(end, cue_end(cue))
             if lo >= hi:
                 continue
             frames = slice(lo-cue.start, hi-cue.start)
@@ -372,12 +439,13 @@ class CockpitEffects:
                 muffling = .90 * (1 - (1-cue.distance)**1.7)
                 data += muffling * (self.distant_samples[cue.clip][frames]-data)
             data *= np.float32(cue.gain * gain)
+            if cue.clip in CLOUD_CLIPS:data *= cloud_depth(cue,lo,hi)
             fade_start = max(lo, cue.stop-cue.fade)
             if hi > fade_start:
                 data[fade_start-lo:] *= ((cue.stop-1-np.arange(fade_start, hi))/cue.fade)[:, None]
             output[lo-self.clock:hi-self.clock] += data
             if spatial is not None:
                 spatial.add_cue(cue,lo-self.clock,lo-cue.start,data,len(self.samples[cue.clip]))
-        self.active = [cue for cue in self.active if cue.stop > end]
+        self.active = [cue for cue in self.active if cue_end(cue) > end]
         self.clock = end
 

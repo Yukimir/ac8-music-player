@@ -75,6 +75,7 @@ def spatial_client(endpoint, cleanup):
 
 class SpatialStream:
     backend = 'Windows Spatial Sound'
+    sample_format = 'Float32'
 
     def __init__(self,client,mask):
         self.mask = mask
@@ -85,6 +86,7 @@ class SpatialStream:
         self.kernel = C.windll.kernel32
         self.kernel.CreateEventW.restype = W.HANDLE
         format = WaveFormat(3,1,48000,192000,4,32,0)  # mono IEEE float per object
+        self.rate = format.rate
         supported = com_method(client,8,C.POINTER(WaveFormat))(client,C.byref(format))
         if supported != 0:raise OSError('Unsupported spatial object format')
         with ExitStack() as local:
@@ -140,11 +142,10 @@ class SpatialStream:
 
     def write(self, block):
         planes = np.ascontiguousarray(block.T,dtype=np.float32)
-        planes *= 1/32768
         for samples,address in zip(planes,self.addresses):
             C.memmove(address,samples.ctypes.data,samples.nbytes)
         self.end_update()
-        self.last_end = time.monotonic()+len(block)/48000
+        self.last_end = time.monotonic()+len(block)/self.rate
 
     def drained(self):
         return time.monotonic()>=self.last_end

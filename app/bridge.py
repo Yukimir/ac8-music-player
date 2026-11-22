@@ -10,7 +10,7 @@ import numpy as np
 from device import Output
 from spectrum import MixSpectrum
 from engine import Media, Transport, RATE
-from cockpit import CockpitEffects
+from cockpit import CLOUD_CLIPS, CockpitEffects
 from arrangement import normalize
 
 DOUBLE_CLICK_MS = ctypes.windll.user32.GetDoubleClickTime()
@@ -34,7 +34,7 @@ def add_native_media(score,entries):
 class Player:
     effect_categories = CockpitEffects.SCENES
 
-    def __init__(self, base, library=None, resolver=None):
+    def __init__(self, base, library=None, resolver=None, initial_song=None):
         data=json.loads((base/'library/score.json').read_text(encoding='utf8'))
         self.resolver=resolver
         if resolver:add_native_media(data,resolver.native)
@@ -42,6 +42,10 @@ class Player:
         self.defaults=json.loads((base/'library/arrangements.json').read_bytes())
         library=library or base/'library'
         self.effects_dir=library/'cockpit'
+        # An older offline extraction can still play its original cockpit scenes.
+        if resolver and resolver.source is None and not all(
+                resolver.cached(Path('cockpit')/(name+'.wav'),resolver.spec['cues'][name]) for name in CLOUD_CLIPS):
+            self.effect_categories=tuple(kind for kind in CockpitEffects.SCENES if kind!='cloud')
         self.transport=Transport(data)
         self.lock=threading.RLock()
         self.media=Media(base,library,resolver)
@@ -55,8 +59,9 @@ class Player:
         self.progress=[0,0]
         self.peaks={}
         self.songs=self.metadata()
-        preferred=next((s for s in self.catalog.values() if s['event']=='AKE_Bgm_Ms29B_Play'),next(iter(self.catalog.values())))
-        self.select(preferred['id'],False)
+        if not isinstance(initial_song,int) or initial_song not in self.catalog:
+            initial_song=next((s['id'] for s in self.catalog.values() if s['event']=='AKE_Bgm_Ms29B_Play'),next(iter(self.catalog)))
+        self.select(initial_song,False)
 
     @staticmethod
     def origin(song):
@@ -102,7 +107,8 @@ class Player:
                 sections.append(part)
             rows.append(dict(id=s['id'],title=s['title'],origin=origin,context=s.get('context',''),
                 original=s.get('originalLabel',''),event=s['event'],bank=s['bank'],also=s.get('relatedTitles',[]),
-                defaultPlan=self.defaults.get(str(s['id'])),sections=sections))
+                defaultPlan=self.defaults.get(str(s['id'])),sections=sections,
+                singleLoops=s['bank']=='单段配乐' and s['loops'].get(str(s['order'][0]),1)==0))
         return rows
 
     def output_error(self,message):
@@ -118,7 +124,7 @@ class Player:
         if request is None or request.get('id')=='default':request=default
         return normalize(request,self.catalog[sid],self.transport.segs)
 
-    def select(self,sid,play,request=None):
+    def select(self,sid,play,request=None,play_mode=None):
         plan=self.resolve(sid,request)
         with self.lock:
             self.generation+=1
@@ -129,6 +135,7 @@ class Player:
             self.spectrum.reset()
             self.peaks.clear();self.ready=False;self.error='';self.autoplay=play
             t.select(self.catalog[sid],arrangement=plan)
+            if play_mode is not None:t.play_mode=play_mode
             ids=t.assets(t.song)
             self.progress=[0,len(ids)]
         def work():
@@ -173,6 +180,8 @@ class Player:
                         effectCategories=self.effect_categories,
                         engineBed=bool(t.effects and t.effects.engine.enabled),seVolume=t.se_volume,
                         doubleClickMs=DOUBLE_CLICK_MS,outputLayout=self.output.layout,outputBackend=self.output.backend,
+                        sourceRate=self.media.sample_rate if self.ready and t.audio else None,
+                        outputRate=self.output.rate,outputFormat=self.output.sample_format,
                         sourceKind=source_kind,sourceChannels=sorted(widths),
                         arrangementId=t.arrangement['id'] if t.arrangement else 'free',stepIndex=t.step_index,
                         repeat=rep,bars=bars,effectiveRepeat=count,run=t.run,finished=t.finished,playMode=t.play_mode,
@@ -194,7 +203,7 @@ class Player:
                     mask=(indexes>=clip['at'])&(indexes<clip['end'])
                     ix=(indexes[mask]-clip['at']+clip['offset'])%len(raw)
                     vals[mask]=np.maximum(vals[mask],np.max(np.abs(raw[ix].astype(np.float32)),axis=1))
-                peaks=np.round(100*np.sqrt(vals.reshape(size,-1).max(axis=1)/32768)).astype(int).tolist()
+                peaks=np.round(100*np.sqrt(np.minimum(1,vals.reshape(size,-1).max(axis=1)))).astype(int).tolist()
                 lanes.append(dict(key=l['key'],id=l['id'],variant=l['variant'],peaks=peaks,
                       clips=[[max(0,c['at']),min(s['length'],c['end'])] for c in l['clips']]))
             result=dict(song=t.song['id'],segment=sid,lanes=lanes,marks=s['marks'])
@@ -208,11 +217,15 @@ class Player:
 
     def dispatch(self,msg):
         op=msg['op'];t=self.transport
+        modes=('ordered','shuffle','repeatOne')
+        mode=msg.get('playMode')
+        if (mode is not None or op=='setPlayMode') and mode not in modes:
+            raise ValueError('无效的播放模式')
         if op=='library':return self.songs
         if op=='state':return self.state()
         if op=='diagram':return self.diagram()
         if op=='select':
-            self.select(int(msg['id']),bool(msg.get('play')),msg.get('arrangement'));return self.state()
+            self.select(int(msg['id']),bool(msg.get('play')),msg.get('arrangement'),mode);return self.state()
         if op=='effectCategories':
             selected=msg.get('categories')
             if not isinstance(selected,list) or any(c not in CockpitEffects.SCENES for c in selected):
@@ -244,11 +257,11 @@ class Player:
                 plan=self.resolve(t.song['id'],msg.get('arrangement'))
                 was_playing=t.playing
                 t.select(t.song,arrangement=plan)
+                if mode is not None:t.play_mode=mode
                 t.playing=was_playing
                 self.output.flush.set();self.spectrum.reset()
-            elif op=='cyclePlayMode':
-                modes=('ordered','shuffle','repeatOne')
-                t.play_mode=modes[(modes.index(t.play_mode)+1)%len(modes)]
+            elif op in ('setPlayMode','cyclePlayMode'):
+                t.play_mode=mode if op=='setPlayMode' else modes[(modes.index(t.play_mode)+1)%len(modes)]
                 if t.play_mode=='repeatOne' and t.finished and self.autoplay and self.ready and not self.error:
                     t.restart()
                     t.playing=True
@@ -333,7 +346,7 @@ if __name__=='__main__':
                 elif op=='importBrowse':result=choose_folder()
                 else:
                     if importer.path is None:raise ValueError('请先设置游戏目录。')
-                    if player is None:player=Player(base,importer.path,importer)
+                    if player is None:player=Player(base,importer.path,importer,request.get('initialSong'))
                     elif revision!=importer.revision and not player.ready:
                         t=player.transport
                         player.select(t.song['id'],player.autoplay,t.arrangement or {'id':'free'})
