@@ -177,7 +177,8 @@
     } else selectSong(id,queue);
   }
   function selectSong(id,queue=libraryQueue,delta=0) {
-    return command('select',{id,play:true,arrangement:Arrangements.saved(songs.get(id)),playMode:libraryMode},null,()=>{
+    return command('select',{id,play:true,arrangement:Arrangements.saved(songs.get(id)),playMode:libraryMode,
+      hasNextSong:queue.length>1},null,()=>{
       navigation.moved(delta);
       playlist.leave();libraryQueue=queue;ended=null;paintCurrent();
     });
@@ -187,7 +188,8 @@
     if (!validEntry(item)) return;
     const playMode=playlist.mode==='repeatOne'?'repeatOne':'ordered';
     const previous=playlist.current;
-    return command('select',{id:item.songId,arrangement:plan,play:true,playMode},null,()=>{
+    const hasNextSong=playlist.mode!=='ordered' || item.id!==playlist.items.at(-1)?.id;
+    return command('select',{id:item.songId,arrangement:plan,play:true,playMode,hasNextSong},null,()=>{
       navigation.moved(delta);
       playlist.start(item.id,fresh);ended=null;paintCurrent();
       if (browsingList() && (focused===previous || focused===item.id)) focusSong(item.id);
@@ -620,7 +622,8 @@
     if (polling || busy) return;
     polling=true; const when=revision;
     try {
-      const s=await api('state');
+      const s=await api('state',state?{song:state.song,
+        hasNextSong:playlist.active?Boolean(neighbors().following):libraryQueue.length>1}:{});
       if (when===revision) {uiError='';update(s);}
     } catch (e) {report(String(e));}
     finally {polling=false;}

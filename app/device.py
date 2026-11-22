@@ -167,13 +167,14 @@ def open_stream(mm, allow_spatial=True):
 
 
 class Output:
-    def __init__(self,transport,lock,on_error,on_block=None):
+    def __init__(self,transport,lock,on_error,on_block=None,continue_cockpit=lambda:False):
         self.player = transport
         self.lock = lock
         self.on_error = on_error
         self.stop = threading.Event()
         self.flush = threading.Event()
         self.on_block = on_block
+        self.continue_cockpit = continue_cockpit
         self.layout = ''
         self.backend = ''
         self.rate = None
@@ -189,7 +190,7 @@ class Output:
         try:
             while not self.stop.is_set():
                 with self.lock:
-                    playing = self.player.playing
+                    playing = self.player.playing or self.continue_cockpit()
                     flush = self.flush.is_set()
                     self.flush.clear()
                 if stream and (flush or (not playing and stream.drained())):
@@ -211,12 +212,13 @@ class Output:
                         self.stop.wait(.001)
                         continue
                     with self.lock:
-                        if not self.player.playing or self.flush.is_set():
+                        cockpit = self.continue_cockpit()
+                        if not (self.player.playing or cockpit) or self.flush.is_set():
                             # Close also completes an outstanding spatial buffer transaction.
                             stream.close()
                             stream = None
                             continue
-                        block = self.player.render(frames,spatial=mixer,floating=True)
+                        block = self.player.render(frames,spatial=mixer,floating=True,continue_cockpit=cockpit)
                         if self.on_block:
                             monitor = mixer.monitor if mixer else block*32768.
                             self.on_block(monitor)

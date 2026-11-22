@@ -49,15 +49,17 @@ class Player:
         self.transport=Transport(data)
         self.lock=threading.RLock()
         self.media=Media(base,library,resolver)
+        self.media_lock=threading.Lock()
         self.spectrum=MixSpectrum(RATE)
-        self.output=Output(self.transport,self.lock,self.output_error,self.spectrum.push)
         self.loader=ThreadPoolExecutor(1)
         self.generation=0
         self.ready=False
         self.autoplay=False
+        self.has_next_song=False
         self.error=''
         self.progress=[0,0]
         self.peaks={}
+        self.output=Output(self.transport,self.lock,self.output_error,self.spectrum.push,self.continue_cockpit)
         self.songs=self.metadata()
         if not isinstance(initial_song,int) or initial_song not in self.catalog:
             initial_song=next((s['id'] for s in self.catalog.values() if s['event']=='AKE_Bgm_Ms29B_Play'),next(iter(self.catalog)))
@@ -114,6 +116,11 @@ class Player:
     def output_error(self,message):
         with self.lock:self.error=message
 
+    def continue_cockpit(self):
+        effects=self.transport.effects
+        return (self.autoplay and not self.error and (not self.ready or self.has_next_song)
+                and effects is not None and effects.needs_output)
+
     def resolve(self,sid,request):
         default=self.defaults.get(str(sid))
         if default is None:return None
@@ -124,16 +131,17 @@ class Player:
         if request is None or request.get('id')=='default':request=default
         return normalize(request,self.catalog[sid],self.transport.segs)
 
-    def select(self,sid,play,request=None,play_mode=None):
+    def select(self,sid,play,request=None,play_mode=None,has_next_song=False):
         plan=self.resolve(sid,request)
         with self.lock:
             self.generation+=1
             gen=self.generation
             t=self.transport
             t.playing=False;t.audio={}
-            self.output.flush.set()
             self.spectrum.reset()
             self.peaks.clear();self.ready=False;self.error='';self.autoplay=play
+            self.has_next_song=has_next_song
+            if not self.continue_cockpit():self.output.flush.set()
             t.select(self.catalog[sid],arrangement=plan)
             if play_mode is not None:t.play_mode=play_mode
             ids=t.assets(t.song)
@@ -142,7 +150,8 @@ class Player:
             try:
                 def progress(i,n):
                     if self.generation==gen:self.progress=[i,n]
-                loaded=self.media.load(ids,progress,lambda:self.generation!=gen)
+                with self.media_lock:
+                    loaded=self.media.load(ids,progress,lambda:self.generation!=gen)
                 with self.lock:
                     if loaded and self.generation==gen:
                         t.audio=dict(self.media.files);self.ready=True
@@ -190,25 +199,35 @@ class Player:
                         levels=[x/255 for x in frames[-1][1]] if frames else [])
 
     def diagram(self):
+        # Media.load evicts and explicitly closes old memory maps. Pin them with
+        # the media lock while sampling the waveform, outside the output lock.
+        if not self.ready:return None
+        with self.media_lock:
+            return self.sample_diagram()
+
+    def sample_diagram(self):
         with self.lock:
             t=self.transport;s=t.segs[t.key];sid=t.key
             if not self.ready:return None
             if sid in self.peaks:return self.peaks[sid]
-            size=200;indexes=np.linspace(0,max(0,s['length']-1),size*48,dtype=np.int64)
-            lanes=[]
-            for l in s['lanes']:
-                vals=np.zeros(len(indexes))
-                for clip in l['clips']:
-                    raw=t.audio[clip['src']]
-                    mask=(indexes>=clip['at'])&(indexes<clip['end'])
-                    ix=(indexes[mask]-clip['at']+clip['offset'])%len(raw)
-                    vals[mask]=np.maximum(vals[mask],np.max(np.abs(raw[ix].astype(np.float32)),axis=1))
-                peaks=np.round(100*np.sqrt(np.minimum(1,vals.reshape(size,-1).max(axis=1)))).astype(int).tolist()
-                lanes.append(dict(key=l['key'],id=l['id'],variant=l['variant'],peaks=peaks,
-                      clips=[[max(0,c['at']),min(s['length'],c['end'])] for c in l['clips']]))
-            result=dict(song=t.song['id'],segment=sid,lanes=lanes,marks=s['marks'])
+            song=t.song['id'];audio=t.audio;generation=self.generation
+        size=200;indexes=np.linspace(0,max(0,s['length']-1),size*48,dtype=np.int64)
+        lanes=[]
+        for l in s['lanes']:
+            vals=np.zeros(len(indexes))
+            for clip in l['clips']:
+                raw=audio[clip['src']]
+                mask=(indexes>=clip['at'])&(indexes<clip['end'])
+                ix=(indexes[mask]-clip['at']+clip['offset'])%len(raw)
+                vals[mask]=np.maximum(vals[mask],np.max(np.abs(raw[ix].astype(np.float32)),axis=1))
+            peaks=np.round(100*np.sqrt(np.minimum(1,vals.reshape(size,-1).max(axis=1)))).astype(int).tolist()
+            lanes.append(dict(key=l['key'],id=l['id'],variant=l['variant'],peaks=peaks,
+                  clips=[[max(0,c['at']),min(s['length'],c['end'])] for c in l['clips']]))
+        result=dict(song=song,segment=sid,lanes=lanes,marks=s['marks'])
+        with self.lock:
+            if generation!=self.generation:return None
             self.peaks[sid]=result
-            return result
+        return result
 
     def prepare_effects(self,effects,categories,engine=False):
         if self.resolver:
@@ -222,10 +241,17 @@ class Player:
         if (mode is not None or op=='setPlayMode') and mode not in modes:
             raise ValueError('无效的播放模式')
         if op=='library':return self.songs
-        if op=='state':return self.state()
+        if op=='state':
+            with self.lock:
+                if 'hasNextSong' in msg and msg.get('song')==t.song['id']:
+                    # A queue edit after a terminal stop must not restart the bed.
+                    if not t.finished or not msg['hasNextSong']:
+                        self.has_next_song=bool(msg['hasNextSong'])
+                return self.state()
         if op=='diagram':return self.diagram()
         if op=='select':
-            self.select(int(msg['id']),bool(msg.get('play')),msg.get('arrangement'),mode);return self.state()
+            self.select(int(msg['id']),bool(msg.get('play')),msg.get('arrangement'),mode,
+                        bool(msg.get('hasNextSong')));return self.state()
         if op=='effectCategories':
             selected=msg.get('categories')
             if not isinstance(selected,list) or any(c not in CockpitEffects.SCENES for c in selected):
@@ -259,7 +285,9 @@ class Player:
                 t.select(t.song,arrangement=plan)
                 if mode is not None:t.play_mode=mode
                 t.playing=was_playing
-                self.output.flush.set();self.spectrum.reset()
+                if not (t.effects and t.effects.needs_output and (was_playing or self.continue_cockpit())):
+                    self.output.flush.set()
+                self.spectrum.reset()
             elif op in ('setPlayMode','cyclePlayMode'):
                 t.play_mode=mode if op=='setPlayMode' else modes[(modes.index(t.play_mode)+1)%len(modes)]
                 if t.play_mode=='repeatOne' and t.finished and self.autoplay and self.ready and not self.error:
@@ -279,7 +307,7 @@ class Player:
                 if op=='startPlayback' and (t.playing or (not self.ready and self.autoplay and not self.error)):
                     return self.state()
                 if self.error and not self.ready:
-                    self.select(t.song['id'],True,t.arrangement or {'id':'free'})
+                    self.select(t.song['id'],True,t.arrangement or {'id':'free'},has_next_song=self.has_next_song)
                 elif self.ready:
                     self.spectrum.reset()
                     if t.finished:
@@ -324,7 +352,8 @@ class Player:
         return self.state()
 
     def close(self):
-        self.generation+=1;self.output.close();self.loader.shutdown(wait=True,cancel_futures=True);self.media.close()
+        self.generation+=1;self.output.close();self.loader.shutdown(wait=True,cancel_futures=True)
+        with self.media_lock:self.media.close()
 
 
 if __name__=='__main__':

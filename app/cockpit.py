@@ -232,6 +232,10 @@ class CockpitEffects:
         if directory is not None:self.prepare(directory,self.SCENES,True)
         self.reset()
 
+    @property
+    def needs_output(self):
+        return self.enabled or self.engine.enabled or self.engine.fade_position>0 or bool(self.active)
+
     def prepare(self,directory,categories=(),engine=False):
         names={name for kind in categories for name in self.SCENE_CLIPS[kind]}
         if engine:names.update((*self.ENGINE_LAYERS,'engine_surge','engine_recovery'))

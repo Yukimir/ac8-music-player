@@ -6,7 +6,7 @@
   },
   "package": {
     "productName": "AC8 Music Player",
-    "version": "1.0.0"
+    "version": "1.0.1"
   },
   "tauri": {
     "systemTray": { "iconPath": "icons/player.ico" },

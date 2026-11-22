@@ -154,7 +154,6 @@ class Transport:
         self.arrangement=arrangement
         self.settings={}
         self.mutes={}
-        if self.effects is not None:self.effects.reset()
         self.restart(sid)
         self.playing=False
 
@@ -406,7 +405,7 @@ class Transport:
         out[a-self.clock:b-self.clock]+=block
         if bed is not None:native[a-self.clock:b-self.clock]+=bed
 
-    def render(self,n,spatial=None,*,floating=False):
+    def render(self,n,spatial=None,*,floating=False,continue_cockpit=False):
         mixed=np.zeros((n,2),np.float32);written=0
         native=np.zeros((n,12),np.float32) if self.has_native else None
         while written<n and self.playing:
@@ -440,15 +439,19 @@ class Transport:
             if not v.get('bridge'):
                 if v.get('fromQueue'):self.section_queue.popleft()
                 self.plan()
+        # During a song handoff the music clock can stop, but the cockpit still
+        # owns the whole device block, including any samples after the last beat.
+        cockpit_frames=n if continue_cockpit else written
+        cockpit=mixed[:cockpit_frames]
         if self.effects is not None:
-            self.effects.filter_music(mixed[:written],None if native is None else native[:written])
+            self.effects.filter_music(cockpit,None if native is None else native[:cockpit_frames])
         if spatial is not None:
             spatial.begin(mixed)
             if self.effects is not None:
-                self.effects.mix(mixed[:written],self.se_volume,None if spatial.front_only else spatial)
+                self.effects.mix(cockpit,self.se_volume,None if spatial.front_only else spatial)
             result=spatial.finish(mixed,self.master,native)
         else:
-            if self.effects is not None:self.effects.mix(mixed[:written], self.se_volume)
+            if self.effects is not None:self.effects.mix(cockpit, self.se_volume)
             if native is not None:mixed+=native @ native_matrix(3)
             result=mixed*self.master
         if floating:return np.clip(result*(1/32768),-1.,1.)
