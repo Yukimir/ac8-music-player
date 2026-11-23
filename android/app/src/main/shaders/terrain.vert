@@ -41,11 +41,22 @@ void main() {
         float heat=spectrum(clamp(loc.x,0.,54.),loc.y).y;
         groundTint=hue(loc.y/55.)*(.12*heat*heat);
     } else {
-        int cols=int(u.geometry.x), id=INSTANCE-skyCount, col=id%cols, line=id/cols;
-        kind=line<64?1:line<128?2:3; // reflected light, emitter, live-edge height marker
-        int r=line%64;
-        float c=firstColumn(v,float(r))+float(col);
-        if(kind==3 && u.motion.w>.5){r=id-128*cols;c=23.;}
+        int cols=int(u.geometry.x), id=INSTANCE-skyCount;
+        bool sideEdge=u.motion.w>.5;
+        int markerCount=sideEdge?64:cols;
+        int r;
+        float c;
+        // Alpha blending follows instance order: edge markers, reflections, then orbs.
+        if(id<markerCount) {
+            kind=3;
+            r=sideEdge?id:0;
+            c=sideEdge?23.:firstColumn(v,0.)+float(id);
+        } else {
+            int point=id-markerCount, line=point/cols;
+            kind=line<64?1:2;
+            r=line%64;
+            c=firstColumn(v,float(r))+float(point%cols);
+        }
         float d=1.+v.turn*(c-v.origin)-v.stepZ*float(r);
         vec2 coord=fieldCoord(v,c,float(r));
         if(d<.10 || coord.x<0. || coord.x>55.){gl_Position=vec4(2.,2.,0.,1.);return;}
