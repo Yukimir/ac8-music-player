@@ -1,4 +1,4 @@
-name: Release Windows player
+name: Release Windows and Android player
 
 on:
   push:
@@ -7,14 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build (e.g. v0.8.0)
+        description: Existing release tag to publish, or leave empty for a build check
         type: string
-        required: true
+        required: false
 
-run-name: Release ${{ inputs.tag || github.ref_name }} for Windows
+run-name: ${{ (inputs.tag || github.event_name == 'push') && 'Release' || 'Check' }} ${{ inputs.tag || github.ref_name }} for Windows and Android
 
 env:
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
 
 permissions:
   contents: read
@@ -32,7 +32,7 @@ jobs:
       PYTHONUTF8: '1'
     steps:
       - name: Validate the requested release tag
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.tag != ''
         shell: bash
         run: |
           [[ "$RELEASE_TAG" == v* ]] && git check-ref-format "refs/tags/$RELEASE_TAG"
@@ -55,8 +55,45 @@ jobs:
           compression-level: 0
           overwrite: true
 
+  android:
+    if: ${{ !github.event.deleted }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install Android SDK packages
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.1" "build-tools;36.0.0"'
+      - name: Use the working version for an untagged build check
+        if: env.RELEASE_TAG == ''
+        run: |
+          python -c 'import tomllib; print("RELEASE_TAG=v" + tomllib.load(open("desktop/Cargo.toml", "rb"))["package"]["version"])' >> "$GITHUB_ENV"
+      - name: Build the Android release APK
+        working-directory: android
+        run: AC8_RELEASE_TAG="$RELEASE_TAG" AC8_BUILD_PYTHON="$(command -v python)" bash ./gradlew --no-daemon :app:assembleRelease -Pac8UnsignedRelease=true
+      - name: Sign the APK and verify its certificate and version
+        env:
+          AC8_ANDROID_SIGNING_PASSWORD: ${{ secrets.AC8_ANDROID_SIGNING_PASSWORD }}
+        run: python scripts/sign_android.py "$RELEASE_TAG" android/app/build/outputs/apk/release/app-release-unsigned.apk dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/*.apk
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
   publish:
-    needs: build
+    if: github.event_name == 'push' || inputs.tag != ''
+    needs: [build, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -64,6 +101,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: windows-x64
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
           path: dist
       - name: Read release notes from the annotated tag
         id: notes
@@ -78,11 +119,13 @@ jobs:
           fi
       - name: Name the Windows download
         run: mv dist/*.zip "dist/AC8-Music-Player-${RELEASE_TAG//\//-}-Windows-x64.zip"
-      - name: Publish the ZIP to the tagged release
+      - name: Publish the Windows ZIP and Android APK
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           body: ${{ fromJSON(steps.notes.outputs.body || '""') }}
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*.apk
           fail_on_unmatched_files: true
           generate_release_notes: ${{ !steps.notes.outputs.body }}

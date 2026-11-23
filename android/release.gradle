@@ -1,0 +1,67 @@
+def versionTag = providers.gradleProperty('ac8VersionTag').orElse(providers.environmentVariable('AC8_RELEASE_TAG')).orNull
+if (!versionTag) {
+    def tag = providers.exec {
+        workingDir rootDir.parentFile
+        commandLine 'git', 'describe', '--tags', '--exact-match', '--match', 'v[0-9]*', 'HEAD'
+        ignoreExitValue = true
+    }
+    versionTag = tag.result.get().exitValue == 0 ? tag.standardOutput.asText.get().trim() : null
+}
+if (!versionTag) {
+    def manifest = rootProject.file('../desktop/Cargo.toml').text
+    versionTag = 'v' + (manifest =~ /(?m)^version\s*=\s*"([^"]+)"/)[0][1]
+}
+def versionPattern = ~/^v(0|[1-9]\d{0,2})\.(0|[1-9]\d?)\.(0|[1-9]\d?)(?:-(alpha|beta|rc)\.(0|[1-9]\d{0,2}))?$/
+def parts = versionPattern.matcher(versionTag)
+if (!parts.matches()) throw new GradleException("Invalid Android release tag '${versionTag}'. Use vX.Y.Z, optionally followed by -alpha.N, -beta.N or -rc.N.")
+int major = parts.group(1) as int
+int minor = parts.group(2) as int
+int patch = parts.group(3) as int
+int sequence = (parts.group(5) ?: '0') as int
+if (major > 209 || sequence > 299) throw new GradleException("Android versionCode is out of range for ${versionTag}.")
+int stage = parts.group(4) ? [alpha: 1, beta: 301, rc: 601][parts.group(4)] + sequence : 999
+int androidVersionCode = ((major * 100 + minor) * 100 + patch) * 1000 + stage
+
+def local = new Properties()
+def localFile = rootProject.file('local.properties')
+if (localFile.isFile()) localFile.withInputStream { local.load(it) }
+def unsignedRelease = providers.gradleProperty('ac8UnsignedRelease').orNull == 'true'
+def signingPassword = null
+if (!unsignedRelease) {
+    signingPassword = providers.environmentVariable('AC8_ANDROID_SIGNING_PASSWORD').orNull
+    def identity = local.getProperty('ac8.signing.identity')
+    if (!signingPassword && identity) {
+        signingPassword = providers.exec {
+            commandLine local.getProperty('ac8.signing.age', 'age'), '--decrypt', '-i', identity,
+                    rootProject.file('signing/release-password.age')
+        }.standardOutput.asText.get().trim()
+    }
+}
+
+android {
+    defaultConfig {
+        versionCode androidVersionCode
+        versionName versionTag.substring(1)
+    }
+    if (signingPassword) {
+        signingConfigs {
+            player {
+                storeFile rootProject.file('signing/release.p12')
+                storeType 'PKCS12'
+                storePassword signingPassword
+                keyAlias 'ac8-player'
+                keyPassword signingPassword
+            }
+        }
+        buildTypes {
+            debug { signingConfig signingConfigs.player }
+            release { signingConfig signingConfigs.player }
+        }
+    }
+}
+
+if (!signingPassword && !unsignedRelease) {
+    tasks.matching { it.name == 'preReleaseBuild' }.configureEach {
+        doFirst { throw new GradleException('Release signing needs ac8.signing.identity in local.properties or AC8_ANDROID_SIGNING_PASSWORD.') }
+    }
+}

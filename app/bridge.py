@@ -358,8 +358,11 @@ class Player:
 
 if __name__=='__main__':
     from game_import import LibraryImport, choose_folder
+    from mobile_transfer import Transfer
+    from config_export import save_backup
     base=Path(__file__).resolve().parent.parent
     importer=LibraryImport(base)
+    transfer=Transfer(base,importer)
     player=None
     revision=importer.revision
     try:
@@ -369,6 +372,11 @@ if __name__=='__main__':
                 if request.get('op')=='quit':break
                 op=request.get('op')
                 if op=='importStatus':result=importer.status()
+                elif op=='mobileOpen':result=transfer.open()
+                elif op=='mobileStatus':result=transfer.status()
+                elif op=='mobileSend':result=transfer.queue(request)
+                elif op=='mobileClose':result=transfer.close()
+                elif op=='saveBackup':result=save_backup(request['data'])
                 elif op=='visualState':result=player.visual_state() if player else {}
                 elif op=='importStart':
                     result=importer.start(request.get('game',''),request.get('extract',False),request.get('native',False))
@@ -385,6 +393,7 @@ if __name__=='__main__':
             except Exception as exc:response={'error':str(exc)}
             print(json.dumps(response,ensure_ascii=False,separators=(',',':'),allow_nan=False),flush=True)
     finally:
+        transfer.close()
         importer.close()
         if player:player.close()
 

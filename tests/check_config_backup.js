@@ -1,0 +1,33 @@
+// node tests/check_config_backup.js
+const assert = require('node:assert/strict');
+const path = require('node:path');
+global.window = global;
+const data = new Map();
+global.localStorage = {getItem:k=>data.get(k)??null, setItem:(k,v)=>data.set(k,v),removeItem:k=>data.delete(k)};
+for (const file of ['arrangements','playlist','config-backup']) require(path.join(__dirname,'../desktop/ui',file+'.js'));
+const a={id:1,sections:[{id:10,bars:4,lanes:[]}],defaultPlan:{id:'default'}}, b={id:2}, songs=[a,b];
+const step={segment:10,repeat:1,lanes:[],changes:[]};
+const plan=(id,name)=>({id,name,steps:[step],loopFrom:null});
+const local=plan('local-b','B 自己维护'), shared=plan('shared','旧名称');
+localStorage.setItem('ac8.arrangements.v1.1',JSON.stringify({last:'local-b',items:[shared,local]}));
+const playlist=new Playlist(localStorage);
+const entry=(id,songId,planId)=>({id,songId,planId});
+playlist.save([entry('b',1,'local-b'),entry('a',1,'shared')]);
+const file={format:'ac8-library-settings',version:1,arrangements:{1:[plan('shared','新名称')]},
+  playlist:{mode:'loopList',items:[entry('new',2,null),entry('a',2,null)]}};
+ConfigBackup.restore(file,songs,playlist);ConfigBackup.restore(file,songs,playlist);
+assert.equal(Arrangements.saved(a).id,'local-b');
+assert.deepEqual(Arrangements.plans(a).map(x=>x.name),[undefined,'新名称',local.name]);
+assert.deepEqual(playlist.items,[entry('b',1,'local-b'),entry('new',2,null),entry('a',2,null)]);
+const result=ConfigBackup.collect(songs,playlist);
+assert.equal(result.playlist.mode,'loopList');
+assert.equal(result.arrangements[1].length,2);
+assert.deepEqual(ConfigBackup.collect(songs,new Playlist(localStorage)),result);
+const snapshot=JSON.stringify([...data]);
+assert.throws(()=>ConfigBackup.restore({...file,playlist:{mode:'ordered',items:[entry('bad',1,'missing')]}},songs,playlist));
+assert.equal(JSON.stringify([...data]),snapshot);
+const setItem=localStorage.setItem;
+localStorage.setItem=(k,v)=>{if(k==='ac8.playlist.v1')throw Error('quota');setItem(k,v)};
+assert.throws(()=>ConfigBackup.restore({...file,arrangements:{1:[plan('shared','回滚测试')]}},songs,playlist));
+assert.equal(JSON.stringify([...data]),snapshot);
+console.log('Passed repeat import, update by ID, local-only rows, invalid references and write rollback.');

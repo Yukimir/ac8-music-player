@@ -4,3 +4,6 @@
 *.json text eol=lf
 *.rs text eol=lf
 *.ico binary
+android/gradlew text eol=lf
+*.p12 binary
+*.age binary

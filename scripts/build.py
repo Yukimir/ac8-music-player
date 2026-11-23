@@ -17,7 +17,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ('arrangement','audio_layout','bridge','cockpit','device','engine','game_import','import_cockpit',
-       'spatial_output','spectrum','surround')
+       'spatial_output','spectrum','surround','mobile_transfer','config_export','qrcodegen')
 METADATA = ('arrangements.json','import.json','native.json','score.json')
 GAME_MEDIA = {'.pak','.utoc','.ucas','.wem','.bnk','.wav','.ogg','.mp3','.flac'}
 

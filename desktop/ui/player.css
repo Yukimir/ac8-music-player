@@ -220,3 +220,21 @@ footer kbd{background:#071528a6}
 @media(max-width:950px){.shell{padding-inline:22px}main{grid-template-columns:minmax(200px,.69fr) minmax(345px,1.25fr);gap:23px}.settings{gap:7px}footer{gap:8px}.game{font-size:10px}.outfmt{display:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}}
 
+#mobilePanel{width:min(700px,92vw);max-height:90vh;overflow:auto;background:#091c2e;color:var(--white);border:1px solid #668aa4;padding:22px}
+#mobilePanel::backdrop{background:#020b18cc}
+#mobilePanel h2{margin:0 0 12px}
+.pair-row{display:flex;align-items:center;gap:18px}
+#pairImage{flex:none;image-rendering:pixelated}
+#pairStart{display:inline-flex;align-items:center;gap:10px;min-height:44px;padding:9px 20px;font-size:16px;background:var(--cyan);color:#082436}
+#pairStart:hover:not(:disabled){background:#dcf7ff}
+#pairAddresses{overflow-wrap:anywhere}
+.mobile-source{display:flex;gap:16px;align-items:center;margin:14px 0 8px;padding:0;border:0}
+.mobile-source legend{float:left;margin-right:14px;color:var(--soft)}
+.mobile-source label,#mobileBulk,#mobileSongs label{cursor:pointer}
+#mobilePanel input:is([type=checkbox],[type=radio]){accent-color:var(--cyan)}
+#mobileQuery{width:100%;margin:0 0 6px;padding:6px 8px;background:#031323;border:1px solid var(--line)}
+#mobileBulk{display:block;padding:5px 0;border-bottom:1px solid var(--line)}
+#mobileSongs{height:clamp(100px,30vh,330px);overflow:auto;margin-bottom:12px}
+#mobileSongs label{display:block;padding:5px 0;font-size:14px}
+.mobile-plans{margin:0 0 8px 26px;color:var(--soft)}
+#mobileMessage{min-height:1em;overflow-wrap:anywhere}

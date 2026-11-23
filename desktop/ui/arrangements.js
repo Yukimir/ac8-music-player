@@ -278,6 +278,7 @@
     }));host.append(actions);
   }
   window.Arrangements={
+    validate, reload(){copies.clear();selected='';if(song){drawList();drawEditor();}},
     saved, plans, connect(cb,onChange,onAdd){
       apply=cb;changed=onChange;addToPlaylist=onAdd;$('arrNew').onclick=()=>edit(null);
     },

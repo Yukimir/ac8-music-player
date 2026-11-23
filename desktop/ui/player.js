@@ -78,7 +78,7 @@
       const song=songs.get(item.songId), plan=planOf(item);
       const infinite=plan?plan.loopFrom!=null || plan.steps.some(step=>step.repeat===0):song.singleLoops;
       const detail=(plan?(plan.name || '默认编排'):'单曲')+' · '+(infinite?'∞ 无限循环':'播放至结束');
-      return {id:item.id,song,detail};
+      return {id:item.id,song,plan,detail};
     });
   }
   function editList(edit) {
@@ -592,7 +592,7 @@
     eye.setAttribute('aria-label',eye.title);
   };
   document.addEventListener('keydown',e=>{
-    if (byId('libraryImport').open || closePrompt.open) return;
+    if (byId('libraryImport').open || byId('mobilePanel').open || closePrompt.open) return;
     if (e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
     const target=e.target, typing=target.tagName==='INPUT' || target.tagName==='SELECT';
     if (e.key==='Escape' && target===byId('query')) {
@@ -677,6 +677,7 @@
       for (const s of catalog) s.search=[s.title,s.origin,s.context,s.original,s.event,...s.also]
         .join(' ').toLocaleLowerCase();
       songs=new Map(catalog.map(s=>[s.id,s]));
+      window.setupMobile?.(api,catalog,playlist,listRows,()=>{listChanged();syncNavigation(true);});
       editList(()=>playlist.keep(validEntry));
       await restoreSelection(selection);
       const saved=savedCategories();

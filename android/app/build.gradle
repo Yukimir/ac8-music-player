@@ -1,0 +1,59 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.plugin.compose'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'local.ac8.mobile'
+    compileSdk { version = release(37) { minorApiLevel = 1 } }
+    defaultConfig {
+        applicationId 'local.ac8.mobile'
+        minSdk 26
+        targetSdk 36
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+    }
+    buildFeatures { compose true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+apply from: rootProject.file('release.gradle')
+
+def sharedEngine = tasks.register('copyMusicEngine', Sync) {
+    from('../../app') { include 'engine.py', 'arrangement.py', 'cockpit.py', 'surround.py', 'spectrum.py' }
+    into layout.buildDirectory.dir('shared-python')
+}
+abstract class SandTableAssets extends DefaultTask {
+    @InputFiles @PathSensitive(PathSensitivity.RELATIVE)
+    abstract ConfigurableFileCollection getScripts()
+    @OutputDirectory abstract DirectoryProperty getOutputDirectory()
+    @javax.inject.Inject abstract FileSystemOperations getFiles()
+    @TaskAction void stage() {
+        files.sync { from(scripts); into(outputDirectory) }
+    }
+}
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    def stage = tasks.register("stage${variant.name.capitalize()}SandTable", SandTableAssets) {
+        scripts.from(fileTree('../../desktop/ui') { include 'spectral-field.js', 'terrain-camera.js', 'terrain-points.js', 'terrain.js' })
+    }
+    variant.sources.assets.addGeneratedSourceDirectory(stage, { it.outputDirectory })
+}
+chaquopy {
+    defaultConfig {
+        version = '3.13'
+        if (System.getenv('AC8_BUILD_PYTHON')) buildPython System.getenv('AC8_BUILD_PYTHON')
+        pip { install 'numpy==1.26.2' }
+    }
+    sourceSets { main { srcDir layout.buildDirectory.dir('shared-python').get().asFile } }
+}
+tasks.matching { it.name.startsWith('merge') && it.name.contains('PythonSources') }.configureEach { dependsOn sharedEngine }
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2026.11.01')
+    implementation 'androidx.activity:activity-compose:1.12.4'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.ui:ui'
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+}

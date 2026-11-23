@@ -12,10 +12,11 @@
   // The vanishing point and the ends of the far edge are measured in fractions
   // of the view. Both grid axes are straight lines under this ground homography.
   const camera=new TerrainCamera(), rowStep=.020;
+  const handheld=document.body.hasAttribute('data-handheld');
   let rendering=!document.body.hasAttribute('data-wallpaper');
   let w=0, h=0, reference=null, view=null, backdrop=null, restingDots=null, wall=null, floorLight=null;
   let vertices=[], rim=[], frame=0, last=0, nextDraw=0;
-  const hues=56, strengths=20, tile=46;
+  const hues=56, strengths=20, tile=handheld?32:46;
   // Frequency runs logarithmically from 38 Hz to 16.5 kHz. The cool
   // background is visible between the colored areas of spectral activity.
   const stops=[
@@ -66,7 +67,8 @@
 
   function makeView(pose) {
     const side=Boolean(pose.side);
-    const vx=w*pose.vx, vy=h*pose.vy, cell=(side?w:h)*pose.cell;
+    const cellHeight=handheld?Math.min(h,w*.74):h;
+    const vx=w*pose.vx, vy=h*pose.vy, cell=(side?w:cellHeight)*pose.cell;
     const slope=(pose.right-pose.left)*h/w;
     const rise=h*(pose.left+(pose.right-pose.left)*pose.vx-pose.vy);
     const turn=-slope*cell/rise;
@@ -250,7 +252,7 @@
         if (p.spacing<=0 || p.x< -margin || p.x>w+margin) continue;
         p.hover=p.spacing*.065;
         p.foot=p.y-p.hover;
-        p.reliefPx=.142*h*p.spacing/(p.spacing+.7*view.cell);
+        p.reliefPx=.142*(handheld?Math.min(h,w):h)*p.spacing/(p.spacing+.7*view.cell);
         if (p.foot-p.reliefPx>h+margin) continue;
         locateSample(c,r,p);
         if (p.age<0) continue;
@@ -443,7 +445,7 @@
     frame=0;
     if (!rendering || document.hidden) return;
     const elapsed=now-last, live=camera.auto || field.playing || field.gain>0;
-    const interval=reduced.matches?(live?65:250):(live?1000/60:1000/24);
+    const interval=reduced.matches?(live?65:250):(live?1000/(handheld?30:60):1000/24);
     if (now<nextDraw-.5) {frame=requestAnimationFrame(animate);return;}
     last=now;
     nextDraw+=interval;
@@ -451,6 +453,7 @@
     field.advance(now,Math.min(250,elapsed));
     camera.advance(Math.min(250,elapsed));
     draw(now);
+    if (handheld && !camera.auto && !field.playing && !field.gain) return;
     frame=requestAnimationFrame(animate);
   }
   function wake() {
