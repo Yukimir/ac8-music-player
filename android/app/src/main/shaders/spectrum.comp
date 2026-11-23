@@ -1,0 +1,56 @@
+#version 450
+#ifndef VULKAN
+precision highp float;
+precision highp int;
+#endif
+// One group per 1024-sample hop. The two real stereo channels share a complex FFT.
+layout(local_size_x=128) in;
+layout(std430,binding=0) readonly buffer Audio { uint pcm[]; };
+layout(std430,binding=1) buffer Spectrum { vec2 levels[]; };
+#ifdef VULKAN
+layout(push_constant) uniform Params { vec4 view; vec4 motion; vec4 screen; vec4 history; vec4 geometry; } u;
+#else
+layout(std140) uniform Params { vec4 view; vec4 motion; vec4 screen; vec4 history; vec4 geometry; } u;
+#endif
+shared vec2 fft[2048];
+shared float peaks[56];
+const float TAU=6.28318530718;
+void main() {
+    uint lane=gl_LocalInvocationID.x;
+    for(uint i=lane;i<2048u;i+=128u) {
+        uint sampleBits=pcm[gl_WorkGroupID.x*1024u+i];
+        vec2 stereo=unpackSnorm2x16(sampleBits);
+        float window=0.5-0.5*cos(TAU*float(i)/2047.);
+        fft[bitfieldReverse(i)>>21u]=stereo*window;
+    }
+    barrier();
+    for(uint halfSize=1u;halfSize<2048u;halfSize*=2u) {
+        for(uint k=lane;k<1024u;k+=128u) {
+            uint j=k%halfSize, a=(k/halfSize)*2u*halfSize+j;
+            float angle=-0.5*TAU*float(j)/float(halfSize);
+            vec2 b=fft[a+halfSize], left=fft[a];
+            vec2 twiddle=vec2(cos(angle),sin(angle));
+            vec2 right=vec2(twiddle.x*b.x-twiddle.y*b.y,twiddle.y*b.x+twiddle.x*b.y);
+            fft[a]=left+right; fft[a+halfSize]=left-right;
+        }
+        barrier();
+    }
+    if(lane<56u) {
+        float edge=38.*pow(16500./38.,float(lane)/56.)*2048./48000.;
+        int lo=max(1,int(round(edge))), hi=max(lo+1,int(round(edge*pow(16500./38.,1./56.))));
+        float peak=0.;
+        for(int k=lo;k<hi;++k) {
+            vec2 a=fft[k], b=fft[2048-k];
+            peak=max(peak,0.5*(dot(a,a)+dot(b,b)));
+        }
+        peaks[lane]=clamp((10.*log2(max(1e-12,peak/(512.*512.)))*0.30103+70.)/70.,0.,1.);
+    }
+    barrier();
+    if(lane<56u) {
+        float loudest=0.;
+        for(int i=0;i<56;++i) loudest=max(loudest,peaks[i]);
+        float v=peaks[lane], heat=clamp(v*2.55,0.,1.)*max(0.,1.-2.55*(loudest-v));
+        int row=(int(u.history.x)+65-int(gl_NumWorkGroups.x)+int(gl_WorkGroupID.x))%64;
+        levels[row*56+int(lane)]=vec2(v,heat);
+    }
+}

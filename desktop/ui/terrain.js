@@ -13,6 +13,7 @@
   // of the view. Both grid axes are straight lines under this ground homography.
   const camera=new TerrainCamera(), rowStep=.020;
   const handheld=document.body.hasAttribute('data-handheld');
+  const orbScale=handheld?2:1;
   let rendering=!document.body.hasAttribute('data-wallpaper');
   let w=0, h=0, reference=null, view=null, backdrop=null, restingDots=null, wall=null, floorLight=null;
   let vertices=[], rim=[], frame=0, last=0, nextDraw=0;
@@ -67,8 +68,9 @@
 
   function makeView(pose) {
     const side=Boolean(pose.side);
-    const cellHeight=handheld?Math.min(h,w*.74):h;
-    const vx=w*pose.vx, vy=h*pose.vy, cell=(side?w:cellHeight)*pose.cell;
+    const columnsAcross=clamp(Math.round(12+w/25),22,76);
+    const cellHeight=handheld?w/(columnsAcross*.0293):(side?w:h);
+    const vx=w*pose.vx, vy=h*pose.vy, cell=cellHeight*pose.cell;
     const slope=(pose.right-pose.left)*h/w;
     const rise=h*(pose.left+(pose.right-pose.left)*pose.vx-pose.vy);
     const turn=-slope*cell/rise;
@@ -166,7 +168,7 @@
 
   function buildWall() {
     // Cache only the vertical falloff curves. The texture itself is redrawn each frame.
-    const width=Math.min(1200,Math.ceil(canvas.width*.72)), top=88, rows=top+5;
+    const width=handheld?73:Math.min(1200,Math.ceil(canvas.width*.72)), top=88, rows=top+5;
     const texture=surface(width,rows), ink=texture.getContext('2d',{alpha:false});
     const bitmap=ink.createImageData(width,rows);
     bitmap.data.fill(255);
@@ -197,6 +199,28 @@
       for (let k=0;k<3;k++) tints[3*i+k]=mix(ice[k],rgb[k],sample.heat);
     }
     const out=bitmap.data, width=texture.width, stride=width*4;
+    if (handheld) {
+      const weights=[1,4,6,4,1], iceCore=[212,240,255];
+      for (let y=0;y<rows;y++) {
+        const z=altitude[y], height=clamp(z), depth=Math.max(0,-z);
+        const spread=Math.round((.027+.083*height)*(width-1));
+        const fade=depth?Math.exp(-40*depth):.14+.86*(1-height)*(1-.55*height);
+        const distance=Math.abs(z);
+        const beam=.58*Math.exp(-190*distance)+.16*Math.exp(-24*distance);
+        for (let px=0;px<width;px++) {
+          let energy=0, red=0, green=0, blue=0;
+          for (let j=-2;j<=2;j++) {
+            const i=clamp(px+j*spread,0,width-1), w=weights[j+2]/16;
+            energy+=energies[i]*w;red+=tints[3*i]*w;green+=tints[3*i+1]*w;blue+=tints[3*i+2]*w;
+          }
+          const at=y*stride+4*px, light=(.32+.17*energy)*fade+.55*beam;
+          out[at]=red*light+iceCore[0]*.45*beam;
+          out[at+1]=green*light+iceCore[1]*.45*beam;
+          out[at+2]=blue*light+iceCore[2]*.45*beam;
+        }
+      }
+      ink.putImageData(bitmap,0,0);wall.updated=now;return;
+    }
     for (let px=0;px<width;px++) {
       const u=(px+.5)/width, x=u*w*1152/h;
       const at=u*(energies.length-1), i=Math.floor(at);
@@ -233,7 +257,7 @@
   function drawWall(g, now) {
     if (now-wall.updated>=32) updateWall(now);
     const {texture,top,rows}=wall;
-    const rowHeight=h*.34/top;
+    const rowHeight=(handheld?Math.max(edgeY(0),edgeY(w)):h*.34)/top;
     g.save(); g.transform(1,view.slope,0,1,0,view.edge);
     g.globalCompositeOperation='lighter';
     g.drawImage(texture,0,-top*rowHeight,w,rows*rowHeight);
@@ -349,7 +373,7 @@
     beam.fillRect(u*beamW,0,beamW,beamH);
   }
 
-  const gpu=TerrainPoints.create(canvas,dots,mirror,tile,field);
+  const gpu=TerrainPoints.create(canvas,dots,mirror,tile,field,orbScale);
 
   function preparePoints(points) {
     for (const p of points) {
@@ -367,7 +391,7 @@
     for (const reflected of [true,false]) {
       const sprite=reflected?mirror:dots;
       for (const p of vertices) {
-        const size=p.spacing*(reflected?.16:.36);
+        const size=p.spacing*(reflected?.16:.36)*orbScale;
         const y=reflected?p.y+p.hover+p.lift:p.foot-p.lift;
         if (y-size/2>h || p.x+size/2<0 || p.x-size/2>w) continue;
         g.drawImage(sprite,p.tint*tile,p.strength*tile,tile,tile,p.x-size/2,y-size/2,size,size);
@@ -445,7 +469,7 @@
     frame=0;
     if (!rendering || document.hidden) return;
     const elapsed=now-last, live=camera.auto || field.playing || field.gain>0;
-    const interval=reduced.matches?(live?65:250):(live?1000/(handheld?30:60):1000/24);
+    const interval=reduced.matches?(live?65:250):(live?(handheld?0:1000/60):1000/24);
     if (now<nextDraw-.5) {frame=requestAnimationFrame(animate);return;}
     last=now;
     nextDraw+=interval;
@@ -478,6 +502,7 @@
     let saved=false;
     try {saved=localStorage.getItem(key)==='1';} catch {}
     setCamera(saved);
+    if (handheld) window.setMobileCruise=enabled=>{if(enabled!==camera.auto)setCamera(enabled);};
     window.addEventListener('storage',event=>{if(event.key===key) setCamera(event.newValue==='1');});
     if (cameraButton) cameraButton.onclick=()=>{
       setCamera(!camera.auto);

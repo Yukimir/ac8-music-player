@@ -1,4 +1,4 @@
-"""Android adapter to the desktop sample-clock engine. AudioTrack consumes stereo PCM16."""
+"""Android adapter to the desktop sample-clock engine and stereo AudioTrack."""
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -116,16 +116,17 @@ class Player:
     def close(self):
         self.loader.shutdown(wait=False,cancel_futures=True)
 
-    def render(self,n):
+    def render(self,n,floating=False):
         if self.loading and self.loading.done():self._sync_effects()
-        return self.t.render(n).tobytes()
+        return self.t.render(n,floating=floating).tobytes()
     def state(self):
         t=self.t
         if not t:return '{}'
         s=t.segs[t.key]
         return json.dumps(dict(song=t.song['id'],title=self.label,plan=self.plan_id,playing=t.playing,finished=t.finished,
             segment=t.key,pos=t.position(),length=s['length'],run=t.run,repeat=t.limits(t.key)[0],bars=t.settings.get(t.key,(None,None))[1],
-            bar=s['bar'],maxBars=max(1,(s['exit']-s['entry']+s['bar']-1)//s['bar']) if s['bar'] else 1,
+            bar=s['bar'],clock=t.clock,gridOrigin=t.active['origin']+s['entry'],sampleRate=48000,
+            maxBars=max(1,(s['exit']-s['entry']+s['bar']-1)//s['bar']) if s['bar'] else 1,
             queued=t.queued,volume=t.master,effectsError=self.effects_error,
             stepIndex=t.step_index,bridge=bool(t.active.get('bridge')),loopFrom=t.arrangement['loopFrom'] if t.arrangement else None,
             lanes=[dict(key=l['key'],on=t.enabled(l)) for l in s['lanes']]),ensure_ascii=False)

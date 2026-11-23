@@ -15,7 +15,9 @@ from mobile_player import Player
 
 
 class Music:
-    def render(self, frames):
+    def render(self, frames, *, floating=False):
+        if floating:
+            return np.full((frames, 2), .25/32768, dtype='<f4')
         return np.ones((frames, 2), dtype=np.int16)
 
 
@@ -65,6 +67,8 @@ with tempfile.TemporaryDirectory() as temp:
         settle(player)
         assert player.effects_error and not player.effects.engine.enabled
         assert len(player.render(256)) == 1024
+        quiet=np.frombuffer(player.render(256,True),dtype='<f4')
+        assert quiet.shape==(512,) and np.all(quiet==.25/32768)
     finally:
         release.set()
         player.close()

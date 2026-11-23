@@ -14,6 +14,8 @@ import com.chaquo.python.android.AndroidPlatform
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -102,11 +104,21 @@ class MusicService:Service(){
             val lib=app.library
             val py=Python.getInstance().getModule("mobile_player").callAttr("Player",lib.root.path)
             player=py
-            val size=AudioTrack.getMinBufferSize(48000,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_16BIT)
-            val track=AudioTrack.Builder().setAudioAttributes(attrs).setAudioFormat(AudioFormat.Builder().setSampleRate(48000)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
-                .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(maxOf(16384,size*2)).build()
+            fun trackFor(encoding:Int):AudioTrack {
+                val size=AudioTrack.getMinBufferSize(48000,AudioFormat.CHANNEL_OUT_STEREO,encoding)
+                require(size>0){"不支持此音频格式"}
+                val frameBytes=if(encoding==AudioFormat.ENCODING_PCM_FLOAT)8 else 4
+                val candidate=AudioTrack.Builder().setAudioAttributes(attrs).setAudioFormat(AudioFormat.Builder()
+                    .setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).setEncoding(encoding).build())
+                    .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(maxOf(4096*frameBytes,size*2)).build()
+                if(candidate.state!=AudioTrack.STATE_INITIALIZED){candidate.release();error("音频输出初始化失败")}
+                return candidate
+            }
+            val track=try{trackFor(AudioFormat.ENCODING_PCM_FLOAT)}catch(_:RuntimeException){trackFor(AudioFormat.ENCODING_PCM_16BIT)}
             output=track
+            val floating=track.audioFormat==AudioFormat.ENCODING_PCM_FLOAT
+            val audioBuffer=ByteBuffer.allocateDirect(2048*(if(floating)8 else 4)).order(ByteOrder.LITTLE_ENDIAN)
+            val meter=audioBuffer.asFloatBuffer()
             var playing=false;var lastPoll=0L;var lastTitle="";var current=0L
             val queue=PlaybackQueue()
             var fromPlaylist=false
@@ -200,9 +212,20 @@ class MusicService:Service(){
                         playing=active;lastTitle=title;now.value=Playing(state);lastPoll=SystemClock.elapsedRealtime()
                     }
                     if(playing){
-                        val block=py.callAttr("render",2048).toJava(ByteArray::class.java)
-                        check(track.write(block,0,block.size,AudioTrack.WRITE_BLOCKING)==block.size){"音频输出中断"}
-                        SandAudio.push(block)
+                        val block=py.callAttr("render",2048,floating).toJava(ByteArray::class.java)
+                        audioBuffer.clear();audioBuffer.put(block);audioBuffer.flip()
+                        while(audioBuffer.hasRemaining()){
+                            check(track.write(audioBuffer,audioBuffer.remaining(),AudioTrack.WRITE_BLOCKING)>0){"音频输出中断"}
+                        }
+                        // The spectrum can use compact PCM16 while the speakers receive the float mix.
+                        if(floating){
+                            val visual=ByteArray(2048*4)
+                            for(i in 0 until 4096){
+                                val sample=(meter.get(i)*32768f).toInt().coerceIn(-32768,32767)
+                                visual[i*2]=sample.toByte();visual[i*2+1]=(sample shr 8).toByte()
+                            }
+                            SandAudio.push(visual)
+                        }else SandAudio.push(block)
                     }
                 }catch(e:Exception){
                     py.callAttr("action","pause","");track.pause();track.flush();playing=false

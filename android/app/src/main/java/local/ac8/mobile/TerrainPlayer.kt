@@ -31,6 +31,7 @@ private val muted=Color(0xFFACBECF)
 private val night=Color(0xFF091522)
 private val gear=glyph("播放设置","M19.43 12.98a7.8 7.8 0 0 0 0-1.96l2.11-1.65-2-3.46-2.49 1a7.7 7.7 0 0 0-1.7-.98L15 3.26h-4l-.36 2.67a7.7 7.7 0 0 0-1.7.98l-2.49-1-2 3.46 2.11 1.65a7.8 7.8 0 0 0 0 1.96l-2.11 1.65 2 3.46 2.49-1a7.7 7.7 0 0 0 1.7.98l.36 2.67h4l.35-2.67a7.7 7.7 0 0 0 1.7-.98l2.49 1 2-3.46z M13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z")
 private val queueIcon=glyph("播放列表","M3 5h15v2H3z M3 10h11v2H3z M3 15h7v2H3z M16 10v7.2a2.8 2.8 0 1 0 2 2.7v-7.8l4-1v-2z")
+private val cruiseIcon=glyph("巡航视角","M12 2c.8 0 1.5 1.5 1.5 3v3l8 6v2l-8-3v4.5l3 2.5v2l-4.5-2-4.5 2v-2l3-2.5V13l-8 3v-2l8-6V5c0-1.5.7-3 1.5-3z")
 private val closeIcon=glyph("关闭","M5.6 7 7 5.6l5 5 5-5L18.4 7l-5 5 5 5-1.4 1.4-5-5-5 5L5.6 17l5-5z")
 private enum class Panel(val title:String){Settings("播放设置"),Queue("播放列表")}
 private val panelColors=darkColorScheme(primary=Color(0xFFACD8EF),onPrimary=night,
@@ -51,6 +52,8 @@ private val panelColors=darkColorScheme(primary=Color(0xFFACD8EF),onPrimary=nigh
     LaunchedEffect(loaded){if(!loaded && panel==Panel.Settings)panel=null}
     BackHandler {if(panel!=null)panel=null else onBack()}
     val activity=LocalActivity.current as ComponentActivity
+    val prefs=remember(activity){activity.getSharedPreferences("terrain",0)}
+    var cruise by remember {mutableStateOf(prefs.getBoolean("cruise",false))}
     DisposableEffect(activity){
         val bars=WindowCompat.getInsetsController(activity.window,activity.window.decorView)
         val status=bars.isAppearanceLightStatusBars;val navigation=bars.isAppearanceLightNavigationBars
@@ -58,9 +61,9 @@ private val panelColors=darkColorScheme(primary=Color(0xFFACD8EF),onPrimary=nigh
         onDispose{bars.isAppearanceLightStatusBars=status;bars.isAppearanceLightNavigationBars=navigation}
     }
     Box(Modifier.fillMaxSize().background(night)){
-        SandTable(active,Modifier.matchParentSize())
+        SandTable(remember(state){TerrainClock.read(state)},cruise,Modifier.matchParentSize())
         Box(Modifier.fillMaxWidth().fillMaxHeight(.36f).background(Brush.verticalGradient(
-            listOf(night.copy(alpha=.82f),night.copy(alpha=.50f),Color.Transparent))))
+            listOf(night.copy(alpha=.38f),night.copy(alpha=.16f),Color.Transparent))))
         Box(Modifier.fillMaxWidth().align(Alignment.BottomCenter).height(125.dp).background(
             Brush.verticalGradient(listOf(Color.Transparent,night.copy(alpha=.9f)))))
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(
@@ -75,7 +78,12 @@ private val panelColors=darkColorScheme(primary=Color(0xFFACD8EF),onPrimary=nigh
                     }
                     TerrainButton(nextIcon,"下一首",state.optBoolean("next")){transport("next")}
                 }
-                TerrainButton(queueIcon,"播放列表",true,selected=panel==Panel.Queue){toggle(Panel.Queue)}
+                Row {
+                    TerrainButton(cruiseIcon,if(cruise)"恢复固定视角" else "开启巡航视角",true,selected=cruise){
+                        cruise=!cruise;prefs.edit().putBoolean("cruise",cruise).apply()
+                    }
+                    TerrainButton(queueIcon,"播放列表",true,selected=panel==Panel.Queue){toggle(Panel.Queue)}
+                }
             }
             BoxWithConstraints(Modifier.fillMaxSize().clipToBounds().navigationBarsPadding()){
                 val side=if(maxWidth>520.dp)32.dp else 22.dp

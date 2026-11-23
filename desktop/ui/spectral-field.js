@@ -24,6 +24,7 @@ class SpectralField {
 
   ingest(state, now) {
     this.playing = state.playing && state.ready && !state.error;
+    this.holdHistory = Boolean(state.holdHistory);
     this.hop = state.spectrumHopMs || 20;
     if (state.spectrumEpoch !== this.epoch || state.song !== this.song) {
       this.epoch = state.spectrumEpoch;
@@ -33,7 +34,10 @@ class SpectralField {
     if (!this.playing) return;
     const frames = state.spectralFrames;
     if (!frames || !frames.length) return;
-    if (this.newest >= 0 && frames[0][0] > this.newest+1) this.clear();
+    if (this.newest >= 0 && frames[0][0] > this.newest+1) {
+      if (this.holdHistory) this.cursor=frames[frames.length-1][0];
+      else this.clear();
+    }
     for (const [number, bytes] of frames) {
       if (number<=this.newest) continue;
       this.store(number,bytes);
@@ -72,7 +76,7 @@ class SpectralField {
   }
 
   advance(now, elapsed) {
-    const live=this.playing && this.newest>=0 && now-this.lastPacket<420;
+    const live=this.playing && this.newest>=0 && (this.holdHistory || now-this.lastPacket<420);
     if (live) {
       // Interpolate at the audio clock between packets; catch up after UI stalls.
       const distance=this.newest-this.cursor;

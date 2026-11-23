@@ -3,7 +3,7 @@
 // A transparent foreground over the terrain. The same atlas, projected ground
 // coordinates and spectral rows also drive the Canvas 2D renderer.
 class TerrainPoints {
-  static create(base,dots,mirror,tile,field) {
+  static create(base,dots,mirror,tile,field,orbScale) {
     const layer=document.createElement('canvas');
     layer.id='terrain-points';
     layer.setAttribute('aria-hidden','true');
@@ -13,7 +13,7 @@ class TerrainPoints {
         stencil:false,antialias:false,failIfMajorPerformanceCaveat:true});
     } catch {return null;}
     if (!gl) return null;
-    const points=new TerrainPoints(gl,dots,mirror,tile,field);
+    const points=new TerrainPoints(gl,dots,mirror,tile,field,orbScale);
     const initialize=()=>{
       try {
         points.initialize();
@@ -35,11 +35,12 @@ class TerrainPoints {
     return points;
   }
 
-  constructor(gl,dots,mirror,tile,field) {
+  constructor(gl,dots,mirror,tile,field,orbScale) {
     this.gl=gl;
     this.images=[mirror,dots];
     this.tile=tile;
     this.field=field;
+    this.orbScale=orbScale;
     this.vertices=new Float32Array(0);
     this.history=new Float32Array(field.capacity*field.bands*4);
     this.rowIds=new Float64Array(field.capacity);
@@ -60,6 +61,7 @@ class TerrainPoints {
     const uniform=name=>gl.getUniformLocation(program,name);
     this.screen=uniform('screen');this.clock=uniform('clock');this.reflection=uniform('reflection');
     gl.uniform2f(uniform('tiles'),this.images[0].width/this.tile,this.images[0].height/this.tile);
+    gl.uniform1f(uniform('orbScale'),this.orbScale);
     gl.uniform1i(uniform('atlas'),0);gl.uniform1i(uniform('history'),1);
     this.buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,this.buffer);
     for (const [index,size,offset] of [[0,4,0],[1,2,16]]) {
@@ -145,6 +147,7 @@ class TerrainPoints {
     layout(location=0) in vec4 point;
     layout(location=1) in vec2 ageBand;
     uniform vec2 screen, clock, tiles;
+    uniform float orbScale;
     uniform bool reflection;
     uniform highp sampler2D history;
     out vec2 uv;
@@ -167,7 +170,7 @@ class TerrainPoints {
       uv=(tile+corner)/tiles;
       float lift=point.z*.065+point.w*s.x*clock.y;
       vec2 center=point.xy+vec2(0.,reflection?lift:-lift);
-      vec2 pixel=center+(corner-.5)*point.z*(reflection?.16:.36);
+      vec2 pixel=center+(corner-.5)*point.z*(reflection?.16:.36)*orbScale;
       gl_Position=vec4(pixel/screen*vec2(2.,-2.)+vec2(-1.,1.),0.,1.);
     }`;
   static fragment=`#version 300 es
